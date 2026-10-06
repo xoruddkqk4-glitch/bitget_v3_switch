@@ -1,0 +1,23 @@
+{
+  "strategy_A": {
+    "cycle_id": 1,
+    "dummy_count": 0,
+    "executed_units": 0,
+    "avg_price": 0.0,
+    "total_qty": 0.0,
+    "cycle_peak": 167.77,
+    "last_action": null,
+    "last_action_date": null
+  },
+  "strategy_B": {
+    "cycle_id": 1,
+    "dummy_count": 0,
+    "executed_units": 0,
+    "avg_price": 0.0,
+    "total_qty": 0.0,
+    "cycle_trough": 167.77,
+    "last_action": null,
+    "last_action_date": null
+  },
+  "last_updated": "2026-10-07 00:25:47"
+}

@@ -23,7 +23,7 @@ description: Triggered by '/apply', '/action apply', or explicit requests to app
 ## 📋 수행 절차 (Workflow)
 
 1. **최신 계획서 확인**:
-   - 아티팩트 디렉터리의 `implementation_plan.md` 또는 직전 `/ask` 대화에서 수립된 계획 내용을 로드하여 변경 대상 파일 및 수정 항목을 파악합니다.
+   - `docs/implementation/implementation_plan.md` (또는 아티팩트 디렉터리의 `implementation_plan.md`)를 로드하여 변경 대상 파일 및 수정 항목을 파악합니다.
 2. **코드 변경 단계별 적용**:
    - `replace_file_content`, `multi_replace_file_content`, `write_to_file` 등의 도구를 사용하여 계획서에 명시된 파일들을 차례대로 정확하게 수정합니다.
 3. **터미널 정적 오류 검증**:

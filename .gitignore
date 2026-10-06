@@ -1,6 +1,7 @@
 # Environments & Secrets
 .env
 .env.*
+!.env.example
 *.env
 secrets.json
 api_key.json
