@@ -114,7 +114,9 @@ class Trader:
                     unit_label="ALL_CLEAR",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{exit_a_reason} (목표: ${target_a_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
+                    note=f"{exit_a_reason} (목표: ${target_a_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)",
+                    realized_pnl=pnl_usd,
+                    pnl_pct=pnl_pct
                 )
                 self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
                 cleared_today_a = True
@@ -166,7 +168,9 @@ class Trader:
                     unit_label="ALL_CLEAR",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{exit_b_reason} (목표: ${target_b_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
+                    note=f"{exit_b_reason} (목표: ${target_b_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)",
+                    realized_pnl=pnl_usd,
+                    pnl_pct=pnl_pct
                 )
                 self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
                 cleared_today_b = True
@@ -378,7 +382,9 @@ class Trader:
                     unit_label="ALL_CLEAR_TRAILING",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
+                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)",
+                    realized_pnl=realized_pnl,
+                    pnl_pct=realized_pct
                 )
                 self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
 
@@ -431,7 +437,9 @@ class Trader:
                     unit_label="ALL_CLEAR_TRAILING",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
+                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)",
+                    realized_pnl=realized_pnl,
+                    pnl_pct=realized_pct
                 )
                 self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
 

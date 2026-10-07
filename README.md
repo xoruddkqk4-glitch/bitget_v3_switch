@@ -154,6 +154,12 @@ python main.py --loop
 ```
 * 프로세스를 계속 띄워두고 5분마다 자동으로 틱을 감시합니다.
 
+### 5) 엑셀 손익차트(종합 / V3+ / V3-) 수동 갱신
+```bash
+python main.py --update-chart
+```
+* `trade_history.xlsx` 내 매매 기록을 기반으로 상단 통합 KPI 카드 및 3종 콤보 차트(종합/V3+/V3-)를 즉시 재빌드하여 갱신합니다.
+
 ---
 
 ## 🌐 6. AWS EC2 실전 배포 및 Crontab 설정 가이드
@@ -306,6 +312,24 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `git rm --cached` 수행 후 로컬 물리 파일(`state.json`, `trade_history.xlsx`) 무결성 및 보존 확인 완료
   - `python -m py_compile` 전 파일 구문 컴파일 오류 0건 통과
 
-
-
-
+## [2026-10-07 18:46] 업데이트 이력 (Commit ID: 5e91b2c)
+- **수정 내용**: 
+  - `떨사오팔봇` 엑셀 양식을 준용한 비트겟 V3 스위치 맞춤형 **'손익차트' 시트 및 3종 콤보 차트 대시보드** 구현:
+    - `utils/excel_logger.py`:
+      - `TradeHistory` 시트 스키마에 `실현손익 ($)`, `수익률 (%)` 수치 컬럼 추가 및 하위 호환 정규식 파싱(Fallback) 지원
+      - `손익차트` 워크시트 자동 생성 및 상단 통합 KPI 요약 카드(누적 실현손익, 청산 완료 건수, 미청산 보유 현황, 기준시각 KST) 배치
+      - 일자별 종합 / V3+(Long DCA) / V3-(Short DCA) 일일 손익 및 누적 손익 상세 집계 테이블(A8:G...) 자동 기록
+      - `openpyxl` 콤보 차트(BarChart 일일손익 + LineChart 누적손익) 3종 생성 및 앵커링:
+        * 차트 1: 종합 실현손익 추이 (`I2`, Royal Blue / Crimson Red)
+        * 차트 2: V3+ 전략 (Long DCA) 실현손익 추이 (`I18`, Sky Blue / Navy Blue)
+        * 차트 3: V3- 전략 (Short DCA) 실현손익 추이 (`I34`, Soft Orange / Deep Amber)
+        * X축 날짜 세로 90도 회전(`rot="-5400000"`), Y축 천단위 구분(`#,##0`), 범례 우측 배치, 폰트 및 테두리 완비
+    - `manager/trader.py`:
+      - 일봉 1차 즉시 청산 및 4H 2단계 트레일링 청산 집행 시 `excel.append_record`에 확정 `realized_pnl`과 `pnl_pct` 수치 전달 연동
+    - `main.py`:
+      - 일봉 마감 파이프라인(`run_pipeline`) 완료 시 `excel_logger.update_pnl_chart()` 자동 갱신 연동
+      - CLI 인자 `--update-chart` 추가로 언제든 손익차트 시트만 즉시 재빌드/갱신 지원
+    - `docs/implementation/pnl_chart_implementation_plan.md`: 손익차트 상세 설계 및 구현 계획서 문서화
+- **검증 결과**:
+  - `python -m py_compile main.py manager/trader.py utils/excel_logger.py` 구문 컴파일 에러 0건 통과
+  - `python main.py --update-chart` CLI 테스트 실행 및 `trade_history.xlsx` 내 '손익차트' 시트 정상 생성 검증 완료

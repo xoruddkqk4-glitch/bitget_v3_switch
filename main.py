@@ -26,6 +26,7 @@ from config import (
 )
 from utils.logger import logger
 from utils.notifier import notifier
+from utils.excel_logger import excel_logger
 from api.bitget_client import bitget_client
 from strategy.indicator import IndicatorCalculator
 from manager.cycle_manager import cycle_manager
@@ -187,6 +188,11 @@ def run_pipeline() -> bool:
             summary_msg += "• 금일 진입/청산 조건 없음 (포지션 유지 또는 관망)"
 
         notifier.send_message(summary_msg)
+        try:
+            excel_logger.update_pnl_chart()
+        except Exception as e_chart:
+            logger.warning(f"[Pipeline] 엑셀 손익차트 갱신 실패: {e_chart}")
+
         logger.info(f"[Pipeline] 일봉 마감 실행 파이프라인 정상 종료 (소요시간: {datetime.now() - start_time})")
         return True
 
@@ -255,9 +261,14 @@ def main():
     parser.add_argument("--cron", action="store_true", help="크론탭(*/5 * * * *) 5분 주기 틱을 1회 실행하고 종료합니다.")
     parser.add_argument("--stage2", action="store_true", help="4시간봉 2단계 트레일링 감시를 1회 즉시 실행하고 종료합니다.")
     parser.add_argument("--loop", action="store_true", help="5분 주기 상시 백그라운드 스케줄러로 구동합니다.")
+    parser.add_argument("--update-chart", action="store_true", help="trade_history.xlsx의 손익차트(종합/V3+/V3-) 시트를 즉시 갱신하고 종료합니다.")
     args = parser.parse_args()
 
-    if args.cron:
+    if args.update_chart:
+        logger.info("[Main] --update-chart 모드로 손익차트 시트 갱신을 실행합니다.")
+        excel_logger.update_pnl_chart()
+        sys.exit(0)
+    elif args.cron:
         logger.info("[Main] --cron 모드로 5분 주기 틱을 실행합니다.")
         success = run_cron_tick()
         sys.exit(0 if success else 1)
