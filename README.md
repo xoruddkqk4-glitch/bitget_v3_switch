@@ -156,6 +156,66 @@ python main.py --loop
 
 ---
 
+## 🌐 6. AWS EC2 실전 배포 및 Crontab 설정 가이드
+
+AWS Ubuntu 서버(예: `t3.micro` 프리티어)에서 24시간 365일 무중단으로 자동매매를 구동하는 상세 가이드입니다.
+
+### 1) 서버 생성 및 타임존(Asia/Seoul) 설정
+```bash
+# 1. 서버 SSH 접속
+ssh -i your-key.pem ubuntu@<EC2_공인_IP>
+
+# 2. 서버 타임존을 서울 시각(KST)으로 변경
+sudo timedatectl set-timezone Asia/Seoul
+date  # KST 확인
+```
+
+### 2) 필수 패키지 설치 및 가상환경 구성
+```bash
+# 시스템 업데이트 및 도구 설치
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-pip python3-venv git
+
+# 프로젝트 클론 및 가상환경 생성
+git clone https://github.com/xoruddkqk4-glitch/bitget_v3_switch.git
+cd bitget_v3_switch
+python3 -m venv venv
+source venv/bin/activate
+
+# 의존성 패키지 설치
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3) 실전 환경변수 설정 (`.env`)
+```bash
+cp .env.example .env
+nano .env
+```
+* `BITGET_API_KEY`, `BITGET_SECRET`, `BITGET_PASSPHRASE` 입력
+* `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 입력
+* **`PAPER_TRADING=false`** (실제 주문 집행을 위해 반드시 `false`로 변경!)
+
+### 4) Crontab 5분 주기 등록
+```bash
+crontab -e
+```
+맨 하단에 다음 1줄을 등록합니다 (경로는 `pwd` 및 `which python` 확인값 기준):
+```cron
+*/5 * * * * cd /home/ubuntu/bitget_v3_switch && /home/ubuntu/bitget_v3_switch/venv/bin/python main.py --cron >> /home/ubuntu/bitget_v3_switch/logs/cron.log 2>&1
+```
+
+### 5) 로그 실시간 모니터링
+```bash
+# 크론탭 실행 틱 로그 확인
+tail -f /home/ubuntu/bitget_v3_switch/logs/cron.log
+
+# 트레이딩 체결 상세 로그 확인
+tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
+```
+
+---
+
 ## 📜 변경 및 업데이트 이력 (Cumulative Update History)
 - 본 섹션은 `.agents/rules/rules.md` (Rule 4)에 따라 `/git-commit` 실행 시마다 최하단에 누적 기록됩니다.
 
@@ -207,4 +267,13 @@ python main.py --loop
   - `python main.py --cron` 5분 틱 모드 검증 완료 (트레일링 미활성 시 0.1초 만에 무부하 정상 종료)
   - `python main.py --run-once` 실제 Bitget SOXL 캔들 수집 및 일봉 1차 파이프라인 정상 가동 확인
   - `python main.py --stage2` 4시간봉 2단계 트레일링 파이프라인 구동 검증 완료
+
+## [2026-10-07 17:52] 업데이트 이력 (Commit ID: 802d580)
+- **수정 내용**: 
+  - `requirements.txt` 패키지 의존성 파일 신규 생성 (`ccxt`, `pandas`, `python-dotenv`, `openpyxl`, `requests`)
+  - `README.md`에 AWS EC2 실전 배포 및 Crontab 5분 주기 등록 상세 가이드(섹션 6) 추가
+- **검증 결과**:
+  - `requirements.txt` 라이브러리 정합성 확인
+  - 마크다운 문서 렌더링 및 명령어 유효성 검증 완료
+
 
