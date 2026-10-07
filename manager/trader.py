@@ -4,6 +4,7 @@ Bitget Hedge Mode 주문(Long/Short 분리 진입/청산) 집행 및 매도 우�
 """
 
 from typing import Dict, Any, List
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 from config import UNIT_DIVISOR, PRESERVATION_BUFFER_PCT
 from api.bitget_client import BitgetClient, bitget_client
@@ -15,6 +16,7 @@ from utils.excel_logger import ExcelLogger, excel_logger
 from utils.logger import logger
 from utils.notifier import TelegramNotifier, notifier
 
+KST = timezone(timedelta(hours=9))
 
 
 class Trader:
@@ -34,6 +36,8 @@ class Trader:
         self.notifier = telegram
         self.strategy_a = StrategyALong()
         self.strategy_b = StrategyBShort()
+        self.last_total_balance: float = 0.0
+        self.last_unit_base_usd: float = 0.0
 
     def process_daily_cycle(self, indicators: Dict[str, Any]) -> List[str]:
         """
@@ -50,6 +54,8 @@ class Trader:
         # 1. 총 평가 잔고 및 1 Unit 기준금액 산출
         total_balance = self.client.fetch_total_balance()
         unit_base_usd = total_balance / UNIT_DIVISOR
+        self.last_total_balance = total_balance
+        self.last_unit_base_usd = unit_base_usd
         logger.info(f"[Trader] 계좌 총 평가 잔고: ${total_balance:,.2f} | 1.0 Unit 기본금액: ${unit_base_usd:,.2f}")
 
         # 2. 전고점/전저점 갱신
@@ -87,7 +93,12 @@ class Trader:
                 # 완만한 하락장 본전 탈출: 지체 없이 즉시 시장가 전량 청산
                 logger.info(f"[Trader] [Strategy A] 롱 즉시 전량 청산 충족! 사유: {exit_a_reason}")
                 qty_to_close = state_a.get('total_qty', 0.0)
+                avg_p = state_a.get('avg_price', 0.0)
+                pnl_usd = (current_price - avg_p) * qty_to_close if avg_p > 0 else 0.0
+                pnl_pct = ((current_price / avg_p) - 1.0) * 100.0 if avg_p > 0 else 0.0
+
                 if qty_to_close > 0:
+                    self.cycles.record_cycle_realized_pnl("strategy_A", pnl_usd, pnl_pct)
                     self.client.create_hedge_order(
                         side='sell',
                         amount=qty_to_close,
@@ -103,11 +114,13 @@ class Trader:
                     unit_label="ALL_CLEAR",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{exit_a_reason} (목표: ${target_a_price:,.2f})"
+                    note=f"{exit_a_reason} (목표: ${target_a_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
                 )
                 self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
                 cleared_today_a = True
-                execution_logs.append(f"🟢 [롱 즉시 전량 청산] {exit_a_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
+                execution_logs.append(
+                    f"🟢 [롱 즉시 전량 청산] {exit_a_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close:,.4f}, 확정손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
+                )
         else:
             logger.info(f"[Trader] [Strategy A] 롱 1차 청산 조건 미충족 ({exit_a_reason})")
 
@@ -132,7 +145,12 @@ class Trader:
                 # 완만한 반등장 본전 탈출: 즉시 시장가 전량 청산
                 logger.info(f"[Trader] [Strategy B] 숏 즉시 전량 청산 충족! 사유: {exit_b_reason}")
                 qty_to_close = state_b.get('total_qty', 0.0)
+                avg_p = state_b.get('avg_price', 0.0)
+                pnl_usd = (avg_p - current_price) * qty_to_close if avg_p > 0 else 0.0
+                pnl_pct = ((avg_p - current_price) / avg_p) * 100.0 if avg_p > 0 else 0.0
+
                 if qty_to_close > 0:
+                    self.cycles.record_cycle_realized_pnl("strategy_B", pnl_usd, pnl_pct)
                     self.client.create_hedge_order(
                         side='buy',
                         amount=qty_to_close,
@@ -148,11 +166,13 @@ class Trader:
                     unit_label="ALL_CLEAR",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{exit_b_reason} (목표: ${target_b_price:,.2f})"
+                    note=f"{exit_b_reason} (목표: ${target_b_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
                 )
                 self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
                 cleared_today_b = True
-                execution_logs.append(f"🔴 [숏 즉시 전량 청산] {exit_b_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
+                execution_logs.append(
+                    f"🔴 [숏 즉시 전량 청산] {exit_b_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close:,.4f}, 확정손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
+                )
         else:
             logger.info(f"[Trader] [Strategy B] 숏 1차 청산 조건 미충족 ({exit_b_reason})")
 
@@ -337,7 +357,12 @@ class Trader:
             if exit_2_met:
                 logger.info(f"[Trader 4H] [Strategy A] 롱 2단계 트레일링 청산 조건 충족! {reason_2}")
                 qty_to_close = state_a.get('total_qty', 0.0)
+                avg_p = state_a.get('avg_price', 0.0)
+                realized_pnl = (current_price - avg_p) * qty_to_close if avg_p > 0 else 0.0
+                realized_pct = ((current_price / avg_p) - 1.0) * 100.0 if avg_p > 0 else 0.0
+
                 if qty_to_close > 0:
+                    self.cycles.record_cycle_realized_pnl("strategy_A", realized_pnl, realized_pct)
                     self.client.create_hedge_order(
                         side='sell',
                         amount=qty_to_close,
@@ -353,12 +378,25 @@ class Trader:
                     unit_label="ALL_CLEAR_TRAILING",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"2단계 트레일링 청산: {reason_2}"
+                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
                 )
                 self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
-                log_msg = f"🟢 [롱 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})"
+
+                kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+                log_msg = f"🟢 [롱 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close:,.4f}, 확정손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
                 execution_logs.append(log_msg)
-                self.notifier.send_message(f"<b>📊 [Bitget V3 Switch 2단계 롱 청산]</b>\n• {log_msg}")
+
+                unit_base = total_balance / UNIT_DIVISOR
+                msg = (
+                    f"<b>📊 [Bitget V3 Switch 2단계 롱 청산 보고]</b>\n\n"
+                    f"• <b>기준 일시:</b> {kst_str}\n"
+                    f"• <b>종목:</b> {self.client.symbol}\n"
+                    f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f}\n"
+                    f"• <b>1.0 Unit 기본 금액:</b> ${unit_base:,.2f}\n"
+                    f"• <b>청산 내용:</b> {log_msg}\n"
+                    f"• <b>확정 수익금:</b> <b>{realized_pnl:+,.2f} USD ({realized_pct:+.2f}%)</b>"
+                )
+                self.notifier.send_message(msg)
 
         # 2. Strategy B (Short) 2단계 감시
         if state_b.get("trailing_mode", False):
@@ -372,7 +410,12 @@ class Trader:
             if exit_2_met:
                 logger.info(f"[Trader 4H] [Strategy B] 숏 2단계 트레일링 청산 조건 충족! {reason_2}")
                 qty_to_close = state_b.get('total_qty', 0.0)
+                avg_p = state_b.get('avg_price', 0.0)
+                realized_pnl = (avg_p - current_price) * qty_to_close if avg_p > 0 else 0.0
+                realized_pct = ((avg_p - current_price) / avg_p) * 100.0 if avg_p > 0 else 0.0
+
                 if qty_to_close > 0:
+                    self.cycles.record_cycle_realized_pnl("strategy_B", realized_pnl, realized_pct)
                     self.client.create_hedge_order(
                         side='buy',
                         amount=qty_to_close,
@@ -388,12 +431,25 @@ class Trader:
                     unit_label="ALL_CLEAR_TRAILING",
                     dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"2단계 트레일링 청산: {reason_2}"
+                    note=f"2단계 트레일링 청산: {reason_2} (손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
                 )
                 self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
-                log_msg = f"🔴 [숏 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})"
+
+                kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+                log_msg = f"🔴 [숏 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close:,.4f}, 확정손익: {realized_pnl:+,.2f} USD, {realized_pct:+.2f}%)"
                 execution_logs.append(log_msg)
-                self.notifier.send_message(f"<b>📊 [Bitget V3 Switch 2단계 숏 청산]</b>\n• {log_msg}")
+
+                unit_base = total_balance / UNIT_DIVISOR
+                msg = (
+                    f"<b>📊 [Bitget V3 Switch 2단계 숏 청산 보고]</b>\n\n"
+                    f"• <b>기준 일시:</b> {kst_str}\n"
+                    f"• <b>종목:</b> {self.client.symbol}\n"
+                    f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f}\n"
+                    f"• <b>1.0 Unit 기본 금액:</b> ${unit_base:,.2f}\n"
+                    f"• <b>청산 내용:</b> {log_msg}\n"
+                    f"• <b>확정 수익금:</b> <b>{realized_pnl:+,.2f} USD ({realized_pct:+.2f}%)</b>"
+                )
+                self.notifier.send_message(msg)
 
         return execution_logs
 

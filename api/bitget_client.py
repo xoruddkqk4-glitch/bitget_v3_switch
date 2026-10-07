@@ -5,6 +5,7 @@ Hedge Mode 강제, 1X 레버리지, 교차마진 설정 및 주문/잔고/OHLCV 
 """
 
 from typing import Dict, Any, Optional, Tuple
+from datetime import timezone, timedelta
 import ccxt
 import pandas as pd
 
@@ -88,8 +89,9 @@ class BitgetClient:
                 return pd.DataFrame()
 
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-            logger.info(f"[BitgetClient] {target_symbol} 일봉 {len(df)}개 수집 완료 (마지막 캔들: {df['datetime'].iloc[-1]})")
+            kst_tz = timezone(timedelta(hours=9))
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert(kst_tz).dt.strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"[BitgetClient] {target_symbol} 일봉 {len(df)}개 수집 완료 (마지막 캔들(KST): {df['datetime'].iloc[-1]})")
             return df
         except Exception as e:
             logger.error(f"[BitgetClient] OHLCV 수집 실패 ({target_symbol}): {e}")

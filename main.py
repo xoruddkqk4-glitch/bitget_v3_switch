@@ -21,7 +21,8 @@ from config import (
     DAILY_EVAL_START_MIN,
     DAILY_EVAL_END_MIN,
     PAPER_TRADING,
-    BITGET_API_KEY
+    BITGET_API_KEY,
+    UNIT_DIVISOR
 )
 from utils.logger import logger
 from utils.notifier import notifier
@@ -30,11 +31,13 @@ from strategy.indicator import IndicatorCalculator
 from manager.cycle_manager import cycle_manager
 from manager.trader import trader
 
+KST = timezone(timedelta(hours=9))
+
 
 def generate_mock_ohlcv(limit: int = 100, timeframe: str = '1d') -> pd.DataFrame:
     """네트워크 연결 불가 시 정적 검증 및 시뮬레이션을 위한 샘플 OHLCV 데이터를 생성합니다."""
     delta = timedelta(hours=4) if timeframe == '4h' else timedelta(days=1)
-    dates = [datetime.now(timezone.utc) - (delta * i) for i in reversed(range(limit))]
+    dates = [datetime.now(KST) - (delta * i) for i in reversed(range(limit))]
     base_price = 30.0
     records = []
     import math
@@ -46,7 +49,7 @@ def generate_mock_ohlcv(limit: int = 100, timeframe: str = '1d') -> pd.DataFrame
         close_p = price
         records.append([
             int(dt.timestamp() * 1000),
-            open_p, high_p, low_p, close_p, 50000.0, dt
+            open_p, high_p, low_p, close_p, 50000.0, dt.strftime('%Y-%m-%d %H:%M:%S')
         ])
     df = pd.DataFrame(records, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'datetime'])
     return df
@@ -109,20 +112,73 @@ def run_pipeline() -> bool:
         trailing_info_a = " [2단계 트레일링 감시 중]" if updated_state_a.get("trailing_mode") else ""
         trailing_info_b = " [2단계 트레일링 감시 중]" if updated_state_b.get("trailing_mode") else ""
 
+        # 잔고 및 1.0 Unit 기본 금액 산출
+        total_balance = getattr(trader, 'last_total_balance', 0.0)
+        if total_balance <= 0.0:
+            total_balance = bitget_client.fetch_total_balance()
+        unit_base_usd = getattr(trader, 'last_unit_base_usd', 0.0)
+        if unit_base_usd <= 0.0:
+            unit_base_usd = total_balance / UNIT_DIVISOR
+
+        # 한국 서울 기준 시간 (KST)
+        kst_now = datetime.now(KST)
+        kst_str = kst_now.strftime('%Y-%m-%d %H:%M:%S KST')
+        candle_date_raw = indicators.get('candle_date', '')
+        candle_date_display = f"{candle_date_raw} (KST)" if candle_date_raw else f"{kst_now.strftime('%Y-%m-%d')} (KST)"
+
+        current_price = indicators['current_price']
+
+        # [전략 A - Long] 평가손익 및 실현손익 계산
+        qty_a = updated_state_a.get('total_qty', 0.0)
+        avg_a = updated_state_a.get('avg_price', 0.0)
+        if qty_a > 0 and avg_a > 0:
+            pnl_usd_a = (current_price - avg_a) * qty_a
+            pnl_pct_a = ((current_price / avg_a) - 1.0) * 100.0
+            pnl_str_a = f"<b>{pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)</b>"
+        else:
+            pnl_str_a = "$0.00 USD (0.00%) [포지션 없음]"
+
+        cum_pnl_a = updated_state_a.get('cumulative_realized_pnl', 0.0)
+        last_pnl_a = updated_state_a.get('last_realized_pnl', 0.0)
+        last_pct_a = updated_state_a.get('last_realized_pct', 0.0)
+        last_closed_a_str = f" (직전 확정: {last_pnl_a:+,.2f} USD, {last_pct_a:+.2f}%)" if last_pnl_a != 0 else ""
+
+        # [전략 B - Short] 평가손익 및 실현손익 계산
+        qty_b = updated_state_b.get('total_qty', 0.0)
+        avg_b = updated_state_b.get('avg_price', 0.0)
+        if qty_b > 0 and avg_b > 0:
+            pnl_usd_b = (avg_b - current_price) * qty_b
+            pnl_pct_b = ((avg_b - current_price) / avg_b) * 100.0
+            pnl_str_b = f"<b>{pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)</b>"
+        else:
+            pnl_str_b = "$0.00 USD (0.00%) [포지션 없음]"
+
+        cum_pnl_b = updated_state_b.get('cumulative_realized_pnl', 0.0)
+        last_pnl_b = updated_state_b.get('last_realized_pnl', 0.0)
+        last_pct_b = updated_state_b.get('last_realized_pct', 0.0)
+        last_closed_b_str = f" (직전 확정: {last_pnl_b:+,.2f} USD, {last_pct_b:+.2f}%)" if last_pnl_b != 0 else ""
+
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 1차 마감 보고]</b>\n\n"
+            f"• <b>기준 일시:</b> {kst_str}\n"
             f"• <b>종목:</b> {SYMBOL}\n"
-            f"• <b>일봉 기준일:</b> {indicators.get('candle_date')}\n"
-            f"• <b>현재가:</b> ${indicators['current_price']:,.2f} "
+            f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f}\n"
+            f"• <b>1.0 Unit 기본 금액:</b> ${unit_base_usd:,.2f}\n"
+            f"• <b>일봉 기준일:</b> {candle_date_display}\n"
+            f"• <b>현재가:</b> ${current_price:,.2f} "
             f"(캔들: {indicators['candle_change']*100:+.2f}%, 전일비: {indicators['daily_change']*100:+.2f}%)\n"
             f"• <b>SMA5:</b> ${indicators['sma5']:,.2f} | <b>SMA60:</b> ${indicators['sma60']:,.2f} "
             f"({'상승' if indicators['is_sma60_rising'] else '하락'})\n\n"
             f"<b>[전략 A - Long DCA]{trailing_info_a}</b>\n"
             f"• 싸이클 #{updated_state_a.get('cycle_id')}: 더미 {updated_state_a.get('dummy_count')}/2, "
-            f"실행 {updated_state_a.get('executed_units')}유닛, 평단 ${updated_state_a.get('avg_price', 0):,.2f}\n\n"
+            f"실행 {updated_state_a.get('executed_units')}유닛, 보유 {qty_a:,.4f} Qty\n"
+            f"• 평단가: ${avg_a:,.2f} | <b>평가손익:</b> {pnl_str_a}\n"
+            f"• <b>누적 실현손익:</b> {cum_pnl_a:+,.2f} USD{last_closed_a_str}\n\n"
             f"<b>[전략 B - Short DCA]{trailing_info_b}</b>\n"
             f"• 싸이클 #{updated_state_b.get('cycle_id')}: 더미 {updated_state_b.get('dummy_count')}/2, "
-            f"실행 {updated_state_b.get('executed_units')}유닛, 평단 ${updated_state_b.get('avg_price', 0):,.2f}\n\n"
+            f"실행 {updated_state_b.get('executed_units')}유닛, 보유 {qty_b:,.4f} Qty\n"
+            f"• 평단가: ${avg_b:,.2f} | <b>평가손익:</b> {pnl_str_b}\n"
+            f"• <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n\n"
             f"<b>[금일 집행 내역]</b>\n"
         )
         if logs:
@@ -136,7 +192,8 @@ def run_pipeline() -> bool:
 
     except Exception as e:
         logger.error(f"[Pipeline] 파이프라인 실행 중 심각한 예외 발생: {e}", exc_info=True)
-        notifier.send_message(f"<b>🚨 [Bitget V3 Switch 에러 발생]</b>\n{str(e)}")
+        kst_err = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+        notifier.send_message(f"<b>🚨 [Bitget V3 Switch 에러 발생]</b>\n• <b>발생 일시:</b> {kst_err}\n• <b>내용:</b> {str(e)}")
         return False
 
 

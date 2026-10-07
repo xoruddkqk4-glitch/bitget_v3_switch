@@ -5,11 +5,13 @@ A/B 전략별 더미 카운트, 실제 매수 회차(executed_units) 및 평단�
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, Tuple
 from config import STATE_FILE, DUMMY_TARGET, WEIGHTED_UNIT_THRESHOLD, WEIGHT_NORMAL, WEIGHT_BOOST
 from utils.logger import logger
+
+KST = timezone(timedelta(hours=9))
 
 
 class CycleManager:
@@ -19,6 +21,10 @@ class CycleManager:
     def __init__(self, state_file: Path = STATE_FILE):
         self.state_file = Path(state_file)
         self.state: Dict[str, Any] = self._load_state()
+
+    def _get_kst_time_str(self) -> str:
+        """현재 한국 시간(KST) 문자열을 반환합니다."""
+        return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
     def _default_strategy_state(self, is_long: bool = True) -> Dict[str, Any]:
         state = {
@@ -33,7 +39,10 @@ class CycleManager:
             "trailing_base_price": 0.0,
             "trailing_target_price": 0.0,
             "trailing_reason": "",
-            "trailing_triggered_at": None
+            "trailing_triggered_at": None,
+            "last_realized_pnl": 0.0,
+            "last_realized_pct": 0.0,
+            "cumulative_realized_pnl": 0.0
         }
         if is_long:
             state["cycle_peak"] = 0.0
@@ -47,7 +56,7 @@ class CycleManager:
             default_state = {
                 "strategy_A": self._default_strategy_state(is_long=True),
                 "strategy_B": self._default_strategy_state(is_long=False),
-                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "last_updated": self._get_kst_time_str()
             }
             self._save_state(default_state)
             return default_state
@@ -66,6 +75,9 @@ class CycleManager:
                         data[strat].setdefault("trailing_target_price", 0.0)
                         data[strat].setdefault("trailing_reason", "")
                         data[strat].setdefault("trailing_triggered_at", None)
+                        data[strat].setdefault("last_realized_pnl", 0.0)
+                        data[strat].setdefault("last_realized_pct", 0.0)
+                        data[strat].setdefault("cumulative_realized_pnl", 0.0)
                 return data
         except Exception as e:
             logger.error(f"[CycleManager] state.json 로드 실패, 기본 상태로 초기화합니다: {e}")
@@ -73,13 +85,13 @@ class CycleManager:
             default_state = {
                 "strategy_A": self._default_strategy_state(is_long=True),
                 "strategy_B": self._default_strategy_state(is_long=False),
-                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "last_updated": self._get_kst_time_str()
             }
             return default_state
 
     def _save_state(self, state: Dict[str, Any]):
         """state.json을 임시 파일을 통해 원자적(Atomic)으로 저장합니다."""
-        state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        state["last_updated"] = self._get_kst_time_str()
         temp_file = self.state_file.with_suffix(".tmp")
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -210,6 +222,18 @@ class CycleManager:
             logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 초기화 완료 (모든 포지션 청산)")
 
         self._save_state(self.state)
+
+    def record_cycle_realized_pnl(self, strategy_name: str, pnl_usd: float, pnl_pct: float):
+        """싸이클 청산 시 실현 손익 및 누적 실현 손익을 기록합니다."""
+        s = self.state[strategy_name]
+        s["last_realized_pnl"] = round(pnl_usd, 4)
+        s["last_realized_pct"] = round(pnl_pct, 4)
+        s["cumulative_realized_pnl"] = round(s.get("cumulative_realized_pnl", 0.0) + pnl_usd, 4)
+        self._save_state(self.state)
+        logger.info(
+            f"[CycleManager] [{strategy_name}] 청산 실현손익 기록: {pnl_usd:+,.2f} USD ({pnl_pct:+.2f}%), "
+            f"누적 실현손익: {s['cumulative_realized_pnl']:+,.2f} USD"
+        )
 
     def set_trailing_mode(
         self,

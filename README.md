@@ -276,4 +276,23 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `requirements.txt` 라이브러리 정합성 확인
   - 마크다운 문서 렌더링 및 명령어 유효성 검증 완료
 
+## [2026-10-07 18:20] 업데이트 이력 (Commit ID: 2a206aa)
+- **수정 내용**: 
+  - **계좌 총 평가 잔고 및 1.0 Unit 기본 금액 표기**:
+    - 거래소 실시간 계좌 총 평가 잔고(`total_balance`)와 분할 계산된 1.0 Unit 기본 금액(`unit_base_usd = total_balance / UNIT_DIVISOR`)을 일봉 마감 보고 및 청산 보고 텔레그램 상단에 명시
+  - **한국 서울 기준 시간(KST, UTC+9) 일원화**:
+    - `api/bitget_client.py`: 일봉 캔들 타임스탬프(UTC)를 서울 시간(`Asia/Seoul`, `UTC+9`)으로 변환하여 `candle_date`에 저장
+    - `main.py`: 보고 기준 일시, 일봉 기준일, 시스템 에러 발생 시각을 모두 `YYYY-MM-DD HH:MM:SS KST`로 일원화
+    - `manager/trader.py`: 2단계 트레일링 청산 발생 시 알림 기준 일시를 KST로 일원화
+    - `manager/cycle_manager.py`: `state.json` 내 `last_updated` 타임스탬프를 KST 시간으로 기록
+  - **각 전략별 실시간 수익금(평가손익 및 누적 실현손익) 상세 표기**:
+    - 전략 A(Long DCA) / 전략 B(Short DCA)별로 현재 보유 포지션의 미실현 평가손익(`+$XX.XX USD (+X.XX%)` 또는 `$0.00 USD (0.00%) [포지션 없음]`) 계산 및 출력
+    - 청산 시 확정 손익을 영속 저장하기 위해 `manager/cycle_manager.py`에 `record_cycle_realized_pnl()` 메서드와 `cumulative_realized_pnl`, `last_realized_pnl`, `last_realized_pct` 필드 추가
+    - 일봉 보고 메시지에 각 전략별 누적 실현손익 및 직전 청산 확정 수익 표기
+    - 2단계 트레일링 청산 알림에도 확정 수익금 및 수익률 명시
+- **검증 결과**:
+  - `python -m py_compile` 전 파일 구문 컴파일 오류 0건 통과
+  - `python main.py --run-once` 테스트 실행을 통해 텔레그램 실제 메시지 전송 및 KST 타임스탬프, 평가 잔고, 1 unit 기본 금액, 전략별 수익금 정보 표기 정상 검증 완료
+
+
 
