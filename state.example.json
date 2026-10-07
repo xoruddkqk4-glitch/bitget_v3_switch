@@ -5,7 +5,7 @@
     "executed_units": 0,
     "avg_price": 0.0,
     "total_qty": 0.0,
-    "cycle_peak": 167.77,
+    "cycle_peak": 0.0,
     "last_action": null,
     "last_action_date": null,
     "trailing_mode": false,
@@ -23,7 +23,7 @@
     "executed_units": 0,
     "avg_price": 0.0,
     "total_qty": 0.0,
-    "cycle_trough": 159.16,
+    "cycle_trough": 0.0,
     "last_action": null,
     "last_action_date": null,
     "trailing_mode": false,
@@ -35,5 +35,5 @@
     "last_realized_pct": 0.0,
     "cumulative_realized_pnl": 0.0
   },
-  "last_updated": "2026-10-07 18:16:26"
+  "last_updated": null
 }

@@ -294,5 +294,18 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile` 전 파일 구문 컴파일 오류 0건 통과
   - `python main.py --run-once` 테스트 실행을 통해 텔레그램 실제 메시지 전송 및 KST 타임스탬프, 평가 잔고, 1 unit 기본 금액, 전략별 수익금 정보 표기 정상 검증 완료
 
+## [2026-10-07 18:25] 업데이트 이력 (Commit ID: ea039b0)
+- **수정 내용**: 
+  - **런타임 상태 및 히스토리 데이터 Git 추적 제외**:
+    - `.gitignore`에 `state.json`, `*.tmp`, `trade_history.xlsx` 등록
+    - `git rm --cached`를 통해 실서버(AWS EC2) 런타임 데이터 파일들을 Git 추적 인덱스에서 안전하게 제거
+    - AWS EC2 환경에서 봇 동작 중 `git pull origin main` 수행 시 로컬 상태 파일 충돌(conflict) 원천 차단 및 실서버 포지션/평단가 데이터 보호
+  - **참조용 기본 상태 템플릿 생성**:
+    - 신규 클론 환경 참고용 `state.example.json` 템플릿 파일 추가
+- **검증 결과**:
+  - `git rm --cached` 수행 후 로컬 물리 파일(`state.json`, `trade_history.xlsx`) 무결성 및 보존 확인 완료
+  - `python -m py_compile` 전 파일 구문 컴파일 오류 0건 통과
+
+
 
 

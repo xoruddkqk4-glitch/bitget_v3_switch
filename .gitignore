@@ -41,3 +41,8 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Runtime Data & State
+state.json
+*.tmp
+trade_history.xlsx
