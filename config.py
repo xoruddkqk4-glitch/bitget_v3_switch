@@ -33,9 +33,19 @@ MOCK_BALANCE = float(os.getenv("MOCK_BALANCE", "10000.0"))
 SYMBOL = "SOXL/USDT:USDT"      # Bitget 선물 마켓 티커
 TIMEFRAME = "1d"               # 일봉 기준 실행
 CANDLE_LIMIT = 100             # 60일선 및 전고점/전저점 산출을 위한 일봉 수집 개수
+TIMEFRAME_4H = "4h"            # 2차 추세 감시용 4시간봉
+CANDLE_LIMIT_4H = 30           # 4시간봉 수집 개수
+SMA_4H_PERIOD = 5              # 4시간봉 5MA 기간
 LEVERAGE = 1                   # 1배율
 MARGIN_MODE = "cross"          # 교차 마진 (Cross Margin)
 POSITION_MODE = "hedge"        # 헤지 모드 (Long/Short 동시 독립 보유)
+
+# 2단계 트레일링 매도 및 스케줄링 설정
+DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 1차 평가 시간(KST)
+DAILY_EVAL_START_MIN = 10      # 일봉 1차 평가 시작 분 (09:10 KST)
+DAILY_EVAL_END_MIN = 15        # 일봉 1차 평가 종료 분 (09:15 KST)
+PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
+
 
 # ------------------------------------------------------------------------------
 # 3. 자금 관리 및 유닛 가중치 설정 (PRD 섹션 2)

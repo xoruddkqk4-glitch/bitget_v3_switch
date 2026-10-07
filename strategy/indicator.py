@@ -75,3 +75,36 @@ class IndicatorCalculator:
             f"낙폭률: {drawdown_rate*100:+.2f}%, 반등폭: {rebound_rate*100:+.2f}%"
         )
         return indicators
+
+    @staticmethod
+    def calculate_4h(df_4h: pd.DataFrame) -> Dict[str, Any]:
+        """
+        4시간봉 OHLCV 데이터를 분석하여 2단계 트레일링 매도 판단 지표를 반환합니다.
+        """
+        if df_4h.empty or len(df_4h) < 5:
+            raise ValueError(f"4시간봉 지표 산출을 위해서는 최소 5개 이상의 캔들이 필요합니다. (현재: {len(df_4h)}개)")
+
+        close_series = df_4h['close'].astype(float)
+        sma5_4h = float(close_series.rolling(window=5).mean().iloc[-1])
+        current_price = float(close_series.iloc[-1])
+        prev_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else current_price
+
+        # 4H 5MA 대비 위치
+        is_below_sma5_4h = current_price < sma5_4h  # 롱 꺾임 (하향 이탈)
+        is_above_sma5_4h = current_price > sma5_4h  # 숏 꺾임 (상향 돌파)
+
+        indicators_4h = {
+            'current_price': current_price,
+            'sma5_4h': sma5_4h,
+            'prev_close': prev_close,
+            'is_below_sma5_4h': is_below_sma5_4h,
+            'is_above_sma5_4h': is_above_sma5_4h,
+            'last_candle_date': str(df_4h['datetime'].iloc[-1]) if 'datetime' in df_4h.columns else ""
+        }
+
+        logger.info(
+            f"[Indicators 4H] 현재가: ${current_price:,.2f}, 4H SMA5: ${sma5_4h:,.2f} | "
+            f"롱하향이탈: {is_below_sma5_4h}, 숏상향돌파: {is_above_sma5_4h}"
+        )
+        return indicators_4h
+

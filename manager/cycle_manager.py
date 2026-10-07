@@ -28,7 +28,12 @@ class CycleManager:
             "avg_price": 0.0,
             "total_qty": 0.0,
             "last_action": None,
-            "last_action_date": None
+            "last_action_date": None,
+            "trailing_mode": False,
+            "trailing_base_price": 0.0,
+            "trailing_target_price": 0.0,
+            "trailing_reason": "",
+            "trailing_triggered_at": None
         }
         if is_long:
             state["cycle_peak"] = 0.0
@@ -51,13 +56,20 @@ class CycleManager:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 # 누락된 키 보정
-                if "strategy_A" not in data:
-                    data["strategy_A"] = self._default_strategy_state(is_long=True)
-                if "strategy_B" not in data:
-                    data["strategy_B"] = self._default_strategy_state(is_long=False)
+                for strat, is_l in [("strategy_A", True), ("strategy_B", False)]:
+                    if strat not in data:
+                        data[strat] = self._default_strategy_state(is_long=is_l)
+                    else:
+                        # 신규 필드 기본값 보정
+                        data[strat].setdefault("trailing_mode", False)
+                        data[strat].setdefault("trailing_base_price", 0.0)
+                        data[strat].setdefault("trailing_target_price", 0.0)
+                        data[strat].setdefault("trailing_reason", "")
+                        data[strat].setdefault("trailing_triggered_at", None)
                 return data
         except Exception as e:
             logger.error(f"[CycleManager] state.json 로드 실패, 기본 상태로 초기화합니다: {e}")
+
             default_state = {
                 "strategy_A": self._default_strategy_state(is_long=True),
                 "strategy_B": self._default_strategy_state(is_long=False),
@@ -179,6 +191,13 @@ class CycleManager:
         else:
             s["cycle_trough"] = 0.0
 
+        # 트레일링 모드 초기화
+        s["trailing_mode"] = False
+        s["trailing_base_price"] = 0.0
+        s["trailing_target_price"] = 0.0
+        s["trailing_reason"] = ""
+        s["trailing_triggered_at"] = None
+
         if transfer_to_dummy1:
             s["dummy_count"] = 1
             s["last_action"] = "BUY_DUMMY"
@@ -191,6 +210,45 @@ class CycleManager:
             logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 초기화 완료 (모든 포지션 청산)")
 
         self._save_state(self.state)
+
+    def set_trailing_mode(
+        self,
+        strategy_name: str,
+        target_price: float,
+        base_price: float,
+        reason: str,
+        date_str: str
+    ):
+        """1차 목표가 달성 후 2단계 4H 5MA 감시 모드를 활성화합니다."""
+        s = self.state[strategy_name]
+        s["trailing_mode"] = True
+        s["trailing_target_price"] = target_price
+        s["trailing_base_price"] = base_price
+        s["trailing_reason"] = reason
+        s["trailing_triggered_at"] = date_str
+        self._save_state(self.state)
+        logger.info(
+            f"[CycleManager] [{strategy_name}] 2단계 트레일링 감시 활성화: "
+            f"1차목표가=${target_price:,.2f}, 최소보존선=${base_price:,.2f} ({reason})"
+        )
+
+    def clear_trailing_mode(self, strategy_name: str):
+        """트레일링 모드를 해제합니다."""
+        s = self.state[strategy_name]
+        s["trailing_mode"] = False
+        s["trailing_base_price"] = 0.0
+        s["trailing_target_price"] = 0.0
+        s["trailing_reason"] = ""
+        s["trailing_triggered_at"] = None
+        self._save_state(self.state)
+        logger.info(f"[CycleManager] [{strategy_name}] 2단계 트레일링 감시 해제")
+
+    def is_any_trailing_active(self) -> bool:
+        """A 또는 B 전략 중 어느 하나라도 2단계 트레일링 감시 중인지 확인합니다."""
+        a_active = self.state.get("strategy_A", {}).get("trailing_mode", False)
+        b_active = self.state.get("strategy_B", {}).get("trailing_mode", False)
+        return bool(a_active or b_active)
+
 
 
 cycle_manager = CycleManager()

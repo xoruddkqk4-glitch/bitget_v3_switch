@@ -4,14 +4,17 @@ Bitget Hedge Mode 주문(Long/Short 분리 진입/청산) 집행 및 매도 우�
 """
 
 from typing import Dict, Any, List
-from config import UNIT_DIVISOR
+import pandas as pd
+from config import UNIT_DIVISOR, PRESERVATION_BUFFER_PCT
 from api.bitget_client import BitgetClient, bitget_client
 from manager.cycle_manager import CycleManager, cycle_manager
+from strategy.indicator import IndicatorCalculator
 from strategy.strategy_a_long import StrategyALong
 from strategy.strategy_b_short import StrategyBShort
 from utils.excel_logger import ExcelLogger, excel_logger
 from utils.logger import logger
 from utils.notifier import TelegramNotifier, notifier
+
 
 
 class Trader:
@@ -60,220 +63,340 @@ class Trader:
         cleared_today_b = False
 
         # ======================================================================
-        # 3. [매도 우선 원칙] 청산(Exit) 평가 및 집행
+        # 3. [매도 우선 원칙] 1차 청산(Exit) 평가 및 집행 / 2단계 트레일링 돌입
         # ======================================================================
 
-        # 3-1. A 전략 (Long) 청산 평가
-        exit_a_met, exit_a_reason, target_a_price = self.strategy_a.check_exit_signal(
+        # 3-1. A 전략 (Long) 1차 청산 평가
+        exit_a_met, action_a, exit_a_reason, target_a_price = self.strategy_a.check_stage1_exit_signal(
             current_price=current_price,
             indicators=indicators,
             cycle_info=state_a
         )
         if exit_a_met:
-            logger.info(f"[Trader] [Strategy A] 롱 전량 청산 조건 충족! 사유: {exit_a_reason}")
-            qty_to_close = state_a.get('total_qty', 0.0)
-            if qty_to_close > 0:
-                self.client.create_hedge_order(
-                    side='sell',
-                    amount=qty_to_close,
-                    pos_side='long',
-                    is_close=True
+            if action_a == "ENTER_STAGE2":
+                # 상승장/과낙폭 익절: 즉시 청산하지 않고 2단계 4H 5MA 감시 모드 활성화
+                self.cycles.set_trailing_mode(
+                    strategy_name="strategy_A",
+                    target_price=target_a_price,
+                    base_price=target_a_price,
+                    reason=exit_a_reason,
+                    date_str=date_str
                 )
-            # 엑셀 기록 및 사이클 리셋
-            self.excel.append_record(
-                date_str=date_str,
-                strategy_name="strategy_A",
-                event_type="SELL_CLEAR",
-                price=current_price,
-                qty=qty_to_close,
-                unit_label="ALL_CLEAR",
-                dummy_status="0 / 2",
-                total_balance=total_balance,
-                note=f"{exit_a_reason} (목표: ${target_a_price:,.2f})"
-            )
-            self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
-            cleared_today_a = True
-            execution_logs.append(f"🟢 [롱 전량 청산] {exit_a_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
+                execution_logs.append(f"🟡 [롱 2단계 트레일링 돌입] {exit_a_reason} (최소보존선: ${target_a_price:,.2f})")
+            elif action_a == "IMMEDIATE_EXIT":
+                # 완만한 하락장 본전 탈출: 지체 없이 즉시 시장가 전량 청산
+                logger.info(f"[Trader] [Strategy A] 롱 즉시 전량 청산 충족! 사유: {exit_a_reason}")
+                qty_to_close = state_a.get('total_qty', 0.0)
+                if qty_to_close > 0:
+                    self.client.create_hedge_order(
+                        side='sell',
+                        amount=qty_to_close,
+                        pos_side='long',
+                        is_close=True
+                    )
+                self.excel.append_record(
+                    date_str=date_str,
+                    strategy_name="strategy_A",
+                    event_type="SELL_CLEAR",
+                    price=current_price,
+                    qty=qty_to_close,
+                    unit_label="ALL_CLEAR",
+                    dummy_status="0 / 2",
+                    total_balance=total_balance,
+                    note=f"{exit_a_reason} (목표: ${target_a_price:,.2f})"
+                )
+                self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
+                cleared_today_a = True
+                execution_logs.append(f"🟢 [롱 즉시 전량 청산] {exit_a_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
         else:
-            logger.info(f"[Trader] [Strategy A] 롱 청산 조건 미충족 ({exit_a_reason})")
+            logger.info(f"[Trader] [Strategy A] 롱 1차 청산 조건 미충족 ({exit_a_reason})")
 
-        # 3-2. B 전략 (Short) 청산 평가
-        exit_b_met, exit_b_reason, target_b_price = self.strategy_b.check_exit_signal(
+        # 3-2. B 전략 (Short) 1차 청산 평가
+        exit_b_met, action_b, exit_b_reason, target_b_price = self.strategy_b.check_stage1_exit_signal(
             current_price=current_price,
             indicators=indicators,
             cycle_info=state_b
         )
         if exit_b_met:
-            logger.info(f"[Trader] [Strategy B] 숏 전량 청산 조건 충족! 사유: {exit_b_reason}")
-            qty_to_close = state_b.get('total_qty', 0.0)
-            if qty_to_close > 0:
-                self.client.create_hedge_order(
-                    side='buy',
-                    amount=qty_to_close,
-                    pos_side='short',
-                    is_close=True
+            if action_b == "ENTER_STAGE2":
+                # 상승눌림/과반등 익절: 2단계 4H 5MA 감시 모드 활성화
+                self.cycles.set_trailing_mode(
+                    strategy_name="strategy_B",
+                    target_price=target_b_price,
+                    base_price=target_b_price,
+                    reason=exit_b_reason,
+                    date_str=date_str
                 )
-            # 엑셀 기록 및 사이클 리셋
-            self.excel.append_record(
-                date_str=date_str,
-                strategy_name="strategy_B",
-                event_type="SELL_CLEAR",
-                price=current_price,
-                qty=qty_to_close,
-                unit_label="ALL_CLEAR",
-                dummy_status="0 / 2",
-                total_balance=total_balance,
-                note=f"{exit_b_reason} (목표: ${target_b_price:,.2f})"
-            )
-            self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
-            cleared_today_b = True
-            execution_logs.append(f"🔴 [숏 전량 청산] {exit_b_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
+                execution_logs.append(f"🟡 [숏 2단계 트레일링 돌입] {exit_b_reason} (최소보존선: ${target_b_price:,.2f})")
+            elif action_b == "IMMEDIATE_EXIT":
+                # 완만한 반등장 본전 탈출: 즉시 시장가 전량 청산
+                logger.info(f"[Trader] [Strategy B] 숏 즉시 전량 청산 충족! 사유: {exit_b_reason}")
+                qty_to_close = state_b.get('total_qty', 0.0)
+                if qty_to_close > 0:
+                    self.client.create_hedge_order(
+                        side='buy',
+                        amount=qty_to_close,
+                        pos_side='short',
+                        is_close=True
+                    )
+                self.excel.append_record(
+                    date_str=date_str,
+                    strategy_name="strategy_B",
+                    event_type="SELL_CLEAR",
+                    price=current_price,
+                    qty=qty_to_close,
+                    unit_label="ALL_CLEAR",
+                    dummy_status="0 / 2",
+                    total_balance=total_balance,
+                    note=f"{exit_b_reason} (목표: ${target_b_price:,.2f})"
+                )
+                self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
+                cleared_today_b = True
+                execution_logs.append(f"🔴 [숏 즉시 전량 청산] {exit_b_reason} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})")
         else:
-            logger.info(f"[Trader] [Strategy B] 숏 청산 조건 미충족 ({exit_b_reason})")
+            logger.info(f"[Trader] [Strategy B] 숏 1차 청산 조건 미충족 ({exit_b_reason})")
+
 
         # ======================================================================
         # 4. [매수 진입 단계] 진입(Entry) 신호 평가 및 집행
         # ======================================================================
 
         # 4-1. A 전략 (Long) 진입 평가
-        entry_a_met, entry_a_reason = self.strategy_a.check_entry_signal(
-            current_candle=indicators,
-            prev_candle={'close': indicators['prev_close']}
-        )
-        if entry_a_met:
-            logger.info(f"[Trader] [Strategy A] 롱 진입 신호 발생: {entry_a_reason}")
-            if cleared_today_a:
-                # PRD 명세: 청산 완료 당일 발생한 매수 신호는 신규 싸이클의 1차 더미로 이관 처리
-                self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=True)
+        if state_a.get("trailing_mode", False):
+            logger.info("[Trader] [Strategy A] 2단계 트레일링 감시 진행 중이므로 신규 롱 진입 스킵")
+        else:
+            entry_a_met, entry_a_reason = self.strategy_a.check_entry_signal(
+                current_candle=indicators,
+                prev_candle={'close': indicators['prev_close']}
+            )
+            if entry_a_met:
+                logger.info(f"[Trader] [Strategy A] 롱 진입 신호 발생: {entry_a_reason}")
+                if cleared_today_a:
+                    # PRD 명세: 청산 완료 당일 발생한 매수 신호는 신규 싸이클의 1차 더미로 이관 처리
+                    self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=True)
+                    self.excel.append_record(
+                        date_str=date_str,
+                        strategy_name="strategy_A",
+                        event_type="BUY_DUMMY",
+                        price=None,
+                        qty=None,
+                        unit_label="더미 1회차 (이관)",
+                        dummy_status="1 / 2",
+                        total_balance=total_balance,
+                        note=f"{entry_a_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
+                    )
+                    execution_logs.append(f"🟡 [롱 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
+                else:
+                    action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_A")
+                    if action_type == "DUMMY":
+                        dummy_count = self.cycles.consume_dummy("strategy_A", date_str=date_str)
+                        self.excel.append_record(
+                            date_str=date_str,
+                            strategy_name="strategy_A",
+                            event_type="BUY_DUMMY",
+                            price=None,
+                            qty=None,
+                            unit_label=unit_label,
+                            dummy_status=f"{dummy_count} / 2",
+                            total_balance=total_balance,
+                            note=f"{entry_a_reason} (더미 방어 소진)"
+                        )
+                        execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
+                    else:
+                        # 실전 매수 집행
+                        target_usd = unit_base_usd * weight
+                        target_qty = target_usd / current_price if current_price > 0 else 0.0
+                        order = self.client.create_hedge_order(
+                            side='buy',
+                            amount=target_qty,
+                            pos_side='long',
+                            is_close=False
+                        )
+                        self.cycles.record_executed_unit(
+                            strategy_name="strategy_A",
+                            price=current_price,
+                            qty=target_qty,
+                            date_str=date_str
+                        )
+                        self.excel.append_record(
+                            date_str=date_str,
+                            strategy_name="strategy_A",
+                            event_type="BUY_UNIT",
+                            price=current_price,
+                            qty=target_qty,
+                            unit_label=unit_label,
+                            dummy_status="2 / 2",
+                            total_balance=total_balance,
+                            note=f"{entry_a_reason} (투입금액: ${target_usd:,.2f})"
+                        )
+                        execution_logs.append(f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
+            else:
+                logger.info("[Trader] [Strategy A] 롱 진입 신호 없음")
+
+        # 4-2. B 전략 (Short) 진입 평가
+        if state_b.get("trailing_mode", False):
+            logger.info("[Trader] [Strategy B] 2단계 트레일링 감시 진행 중이므로 신규 숏 진입 스킵")
+        else:
+            entry_b_met, entry_b_reason = self.strategy_b.check_entry_signal(
+                current_candle=indicators,
+                prev_candle={'close': indicators['prev_close']}
+            )
+            if entry_b_met:
+                logger.info(f"[Trader] [Strategy B] 숏 진입 신호 발생: {entry_b_reason}")
+                if cleared_today_b:
+                    # PRD 명세: 청산 완료 당일 발생한 매도(숏) 신호는 신규 싸이클의 1차 더미로 이관 처리
+                    self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=True)
+                    self.excel.append_record(
+                        date_str=date_str,
+                        strategy_name="strategy_B",
+                        event_type="BUY_DUMMY",
+                        price=None,
+                        qty=None,
+                        unit_label="더미 1회차 (이관)",
+                        dummy_status="1 / 2",
+                        total_balance=total_balance,
+                        note=f"{entry_b_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
+                    )
+                    execution_logs.append(f"🟡 [숏 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
+                else:
+                    action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_B")
+                    if action_type == "DUMMY":
+                        dummy_count = self.cycles.consume_dummy("strategy_B", date_str=date_str)
+                        self.excel.append_record(
+                            date_str=date_str,
+                            strategy_name="strategy_B",
+                            event_type="BUY_DUMMY",
+                            price=None,
+                            qty=None,
+                            unit_label=unit_label,
+                            dummy_status=f"{dummy_count} / 2",
+                            total_balance=total_balance,
+                            note=f"{entry_b_reason} (더미 방어 소진)"
+                        )
+                        execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
+                    else:
+                        # 실전 숏 매도 집행
+                        target_usd = unit_base_usd * weight
+                        target_qty = target_usd / current_price if current_price > 0 else 0.0
+                        order = self.client.create_hedge_order(
+                            side='sell',
+                            amount=target_qty,
+                            pos_side='short',
+                            is_close=False
+                        )
+                        self.cycles.record_executed_unit(
+                            strategy_name="strategy_B",
+                            price=current_price,
+                            qty=target_qty,
+                            date_str=date_str
+                        )
+                        self.excel.append_record(
+                            date_str=date_str,
+                            strategy_name="strategy_B",
+                            event_type="BUY_UNIT",
+                            price=current_price,
+                            qty=target_qty,
+                            unit_label=unit_label,
+                            dummy_status="2 / 2",
+                            total_balance=total_balance,
+                            note=f"{entry_b_reason} (투입금액: ${target_usd:,.2f})"
+                        )
+                        execution_logs.append(f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
+            else:
+                logger.info("[Trader] [Strategy B] 숏 진입 신호 없음")
+
+        return execution_logs
+
+    def process_stage2_monitoring(self, df_4h: pd.DataFrame) -> List[str]:
+        """
+        5분 주기 2단계 트레일링 매도 전용 감시 파이프라인
+        A 또는 B 전략이 trailing_mode 활성 상태일 때 4시간봉 5MA 및 최소 이익 보존선을 검사하여 청산 집행
+        """
+        execution_logs: List[str] = []
+        if df_4h.empty or len(df_4h) < 5:
+            logger.warning("[Trader 4H] 4시간봉 캔들이 부족하여 2단계 감시를 건너뜁니다.")
+            return execution_logs
+
+        indicators_4h = IndicatorCalculator.calculate_4h(df_4h)
+        current_price = indicators_4h['current_price']
+        date_str = indicators_4h.get('last_candle_date', '')
+        total_balance = self.client.fetch_total_balance()
+
+        state_a = self.cycles.get_strategy_state("strategy_A")
+        state_b = self.cycles.get_strategy_state("strategy_B")
+
+        # 1. Strategy A (Long) 2단계 감시
+        if state_a.get("trailing_mode", False):
+            trailing_base = state_a.get("trailing_base_price", 0.0)
+            exit_2_met, reason_2 = self.strategy_a.check_stage2_exit_signal(
+                current_price=current_price,
+                indicators_4h=indicators_4h,
+                trailing_base_price=trailing_base,
+                buffer_pct=PRESERVATION_BUFFER_PCT
+            )
+            if exit_2_met:
+                logger.info(f"[Trader 4H] [Strategy A] 롱 2단계 트레일링 청산 조건 충족! {reason_2}")
+                qty_to_close = state_a.get('total_qty', 0.0)
+                if qty_to_close > 0:
+                    self.client.create_hedge_order(
+                        side='sell',
+                        amount=qty_to_close,
+                        pos_side='long',
+                        is_close=True
+                    )
                 self.excel.append_record(
                     date_str=date_str,
                     strategy_name="strategy_A",
-                    event_type="BUY_DUMMY",
-                    price=None,
-                    qty=None,
-                    unit_label="더미 1회차 (이관)",
-                    dummy_status="1 / 2",
+                    event_type="SELL_CLEAR",
+                    price=current_price,
+                    qty=qty_to_close,
+                    unit_label="ALL_CLEAR_TRAILING",
+                    dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{entry_a_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
+                    note=f"2단계 트레일링 청산: {reason_2}"
                 )
-                execution_logs.append(f"🟡 [롱 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
-            else:
-                action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_A")
-                if action_type == "DUMMY":
-                    dummy_count = self.cycles.consume_dummy("strategy_A", date_str=date_str)
-                    self.excel.append_record(
-                        date_str=date_str,
-                        strategy_name="strategy_A",
-                        event_type="BUY_DUMMY",
-                        price=None,
-                        qty=None,
-                        unit_label=unit_label,
-                        dummy_status=f"{dummy_count} / 2",
-                        total_balance=total_balance,
-                        note=f"{entry_a_reason} (더미 방어 소진)"
-                    )
-                    execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
-                else:
-                    # 실전 매수 집행
-                    target_usd = unit_base_usd * weight
-                    target_qty = target_usd / current_price if current_price > 0 else 0.0
-                    order = self.client.create_hedge_order(
-                        side='buy',
-                        amount=target_qty,
-                        pos_side='long',
-                        is_close=False
-                    )
-                    self.cycles.record_executed_unit(
-                        strategy_name="strategy_A",
-                        price=current_price,
-                        qty=target_qty,
-                        date_str=date_str
-                    )
-                    self.excel.append_record(
-                        date_str=date_str,
-                        strategy_name="strategy_A",
-                        event_type="BUY_UNIT",
-                        price=current_price,
-                        qty=target_qty,
-                        unit_label=unit_label,
-                        dummy_status="2 / 2",
-                        total_balance=total_balance,
-                        note=f"{entry_a_reason} (투입금액: ${target_usd:,.2f})"
-                    )
-                    execution_logs.append(f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
-        else:
-            logger.info("[Trader] [Strategy A] 롱 진입 신호 없음")
+                self.cycles.reset_cycle("strategy_A", date_str=date_str, transfer_to_dummy1=False)
+                log_msg = f"🟢 [롱 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})"
+                execution_logs.append(log_msg)
+                self.notifier.send_message(f"<b>📊 [Bitget V3 Switch 2단계 롱 청산]</b>\n• {log_msg}")
 
-        # 4-2. B 전략 (Short) 진입 평가
-        entry_b_met, entry_b_reason = self.strategy_b.check_entry_signal(
-            current_candle=indicators,
-            prev_candle={'close': indicators['prev_close']}
-        )
-        if entry_b_met:
-            logger.info(f"[Trader] [Strategy B] 숏 진입 신호 발생: {entry_b_reason}")
-            if cleared_today_b:
-                # PRD 명세: 청산 완료 당일 발생한 매도(숏) 신호는 신규 싸이클의 1차 더미로 이관 처리
-                self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=True)
+        # 2. Strategy B (Short) 2단계 감시
+        if state_b.get("trailing_mode", False):
+            trailing_base = state_b.get("trailing_base_price", 0.0)
+            exit_2_met, reason_2 = self.strategy_b.check_stage2_exit_signal(
+                current_price=current_price,
+                indicators_4h=indicators_4h,
+                trailing_base_price=trailing_base,
+                buffer_pct=PRESERVATION_BUFFER_PCT
+            )
+            if exit_2_met:
+                logger.info(f"[Trader 4H] [Strategy B] 숏 2단계 트레일링 청산 조건 충족! {reason_2}")
+                qty_to_close = state_b.get('total_qty', 0.0)
+                if qty_to_close > 0:
+                    self.client.create_hedge_order(
+                        side='buy',
+                        amount=qty_to_close,
+                        pos_side='short',
+                        is_close=True
+                    )
                 self.excel.append_record(
                     date_str=date_str,
                     strategy_name="strategy_B",
-                    event_type="BUY_DUMMY",
-                    price=None,
-                    qty=None,
-                    unit_label="더미 1회차 (이관)",
-                    dummy_status="1 / 2",
+                    event_type="SELL_CLEAR",
+                    price=current_price,
+                    qty=qty_to_close,
+                    unit_label="ALL_CLEAR_TRAILING",
+                    dummy_status="0 / 2",
                     total_balance=total_balance,
-                    note=f"{entry_b_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
+                    note=f"2단계 트레일링 청산: {reason_2}"
                 )
-                execution_logs.append(f"🟡 [숏 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
-            else:
-                action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_B")
-                if action_type == "DUMMY":
-                    dummy_count = self.cycles.consume_dummy("strategy_B", date_str=date_str)
-                    self.excel.append_record(
-                        date_str=date_str,
-                        strategy_name="strategy_B",
-                        event_type="BUY_DUMMY",
-                        price=None,
-                        qty=None,
-                        unit_label=unit_label,
-                        dummy_status=f"{dummy_count} / 2",
-                        total_balance=total_balance,
-                        note=f"{entry_b_reason} (더미 방어 소진)"
-                    )
-                    execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
-                else:
-                    # 실전 숏 매도 집행
-                    target_usd = unit_base_usd * weight
-                    target_qty = target_usd / current_price if current_price > 0 else 0.0
-                    order = self.client.create_hedge_order(
-                        side='sell',
-                        amount=target_qty,
-                        pos_side='short',
-                        is_close=False
-                    )
-                    self.cycles.record_executed_unit(
-                        strategy_name="strategy_B",
-                        price=current_price,
-                        qty=target_qty,
-                        date_str=date_str
-                    )
-                    self.excel.append_record(
-                        date_str=date_str,
-                        strategy_name="strategy_B",
-                        event_type="BUY_UNIT",
-                        price=current_price,
-                        qty=target_qty,
-                        unit_label=unit_label,
-                        dummy_status="2 / 2",
-                        total_balance=total_balance,
-                        note=f"{entry_b_reason} (투입금액: ${target_usd:,.2f})"
-                    )
-                    execution_logs.append(f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
-        else:
-            logger.info("[Trader] [Strategy B] 숏 진입 신호 없음")
+                self.cycles.reset_cycle("strategy_B", date_str=date_str, transfer_to_dummy1=False)
+                log_msg = f"🔴 [숏 2단계 트레일링 익절 완료] {reason_2} (체결가: ${current_price:,.2f}, 수량: {qty_to_close})"
+                execution_logs.append(log_msg)
+                self.notifier.send_message(f"<b>📊 [Bitget V3 Switch 2단계 숏 청산]</b>\n• {log_msg}")
 
         return execution_logs
 
 
 trader = Trader()
+

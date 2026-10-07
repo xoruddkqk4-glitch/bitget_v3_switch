@@ -7,7 +7,12 @@
     "total_qty": 0.0,
     "cycle_peak": 167.77,
     "last_action": null,
-    "last_action_date": null
+    "last_action_date": null,
+    "trailing_mode": false,
+    "trailing_base_price": 0.0,
+    "trailing_target_price": 0.0,
+    "trailing_reason": "",
+    "trailing_triggered_at": null
   },
   "strategy_B": {
     "cycle_id": 1,
@@ -15,9 +20,14 @@
     "executed_units": 0,
     "avg_price": 0.0,
     "total_qty": 0.0,
-    "cycle_trough": 167.77,
+    "cycle_trough": 163.04,
     "last_action": null,
-    "last_action_date": null
+    "last_action_date": null,
+    "trailing_mode": false,
+    "trailing_base_price": 0.0,
+    "trailing_target_price": 0.0,
+    "trailing_reason": "",
+    "trailing_triggered_at": null
   },
-  "last_updated": "2026-10-07 00:25:47"
+  "last_updated": "2026-10-07 16:37:53"
 }
