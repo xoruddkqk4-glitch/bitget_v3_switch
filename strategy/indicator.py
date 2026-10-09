@@ -26,39 +26,51 @@ class IndicatorCalculator:
         sma5_series = close_series.rolling(window=5).mean()
         sma60_series = close_series.rolling(window=60).mean()
 
+        # 실시간 가격 (오늘 미완성 캔들 iloc[-1]: 주문 집행 및 실시간 평가손익용)
         current_close = float(close_series.iloc[-1])
         current_open = float(df['open'].iloc[-1])
-        prev_close = float(close_series.iloc[-2])
 
-        sma5_current = float(sma5_series.iloc[-1])
-        sma60_current = float(sma60_series.iloc[-1])
-        sma60_prev = float(sma60_series.iloc[-2])
+        # 신호 판정 기준 일봉: 방금 09:00 마감 완료된 전일 완성봉 (iloc[-2])
+        # 비교 기준 전일봉: 전전일 완성봉 (iloc[-3])
+        eval_close = float(close_series.iloc[-2])
+        eval_open = float(df['open'].iloc[-2])
+        prev_eval_close = float(close_series.iloc[-3])
 
-        # 60일선 상승 여부
-        is_sma60_rising = sma60_current > sma60_prev
+        # 완성봉 기준 이동평균선 (전일 마감 기준 SMA)
+        sma5_eval = float(sma5_series.iloc[-2])
+        sma60_eval = float(sma60_series.iloc[-2])
+        sma60_prev_eval = float(sma60_series.iloc[-3])
 
-        # 캔들 등락률 (종가 / 시가 - 1)
-        candle_change = (current_close / current_open) - 1.0 if current_open > 0 else 0.0
+        # 60일선 상승 여부 (전일 마감 기준)
+        is_sma60_rising = sma60_eval > sma60_prev_eval
 
-        # 전일 대비 등락률 (종가 / 전일종가 - 1)
-        daily_change = (current_close / prev_close) - 1.0 if prev_close > 0 else 0.0
+        # 캔들 등락률 (전일 완성봉 음봉/양봉: 종가 / 시가 - 1)
+        candle_change = (eval_close / eval_open) - 1.0 if eval_open > 0 else 0.0
 
-        # 싸이클 전고점/전저점 기준 낙폭률 및 반등폭 산출
+        # 전일 대비 등락률 (전일 완성봉 종가 / 전전일 종가 - 1)
+        daily_change = (eval_close / prev_eval_close) - 1.0 if prev_eval_close > 0 else 0.0
+
+        # 싸이클 전고점/전저점 기준 낙폭률 및 반등폭 산출 (현재가 및 완성봉 종가 반영)
         # Long 전략: 낙폭률 = (현재가 - 전고점) / 전고점
-        effective_peak = max(cycle_peak, current_close) if cycle_peak > 0 else current_close
+        effective_peak = max(cycle_peak, current_close, eval_close) if cycle_peak > 0 else max(current_close, eval_close)
         drawdown_rate = (current_close - effective_peak) / effective_peak if effective_peak > 0 else 0.0
 
         # Short 전략: 반등폭 = (현재가 - 전저점) / 전저점
-        effective_trough = min(cycle_trough, current_close) if cycle_trough > 0 else current_close
+        effective_trough = min(cycle_trough, current_close, eval_close) if cycle_trough > 0 else min(current_close, eval_close)
         rebound_rate = (current_close - effective_trough) / effective_trough if effective_trough > 0 else 0.0
+
+        # 평가 대상 완성봉 일시 (전일 일봉)
+        eval_candle_date = str(df['datetime'].iloc[-2]) if 'datetime' in df.columns else ""
 
         indicators = {
             'current_price': current_close,
             'current_open': current_open,
-            'prev_close': prev_close,
-            'sma5': sma5_current,
-            'sma60': sma60_current,
-            'sma60_prev': sma60_prev,
+            'prev_close': eval_close,
+            'eval_close': eval_close,
+            'eval_open': eval_open,
+            'sma5': sma5_eval,
+            'sma60': sma60_eval,
+            'sma60_prev': sma60_prev_eval,
             'is_sma60_rising': is_sma60_rising,
             'candle_change': candle_change,
             'daily_change': daily_change,
@@ -66,13 +78,14 @@ class IndicatorCalculator:
             'effective_trough': effective_trough,
             'drawdown_rate': drawdown_rate,
             'rebound_rate': rebound_rate,
-            'candle_date': str(df['datetime'].iloc[-1]) if 'datetime' in df.columns else ""
+            'candle_date': eval_candle_date,
+            'latest_datetime': str(df['datetime'].iloc[-1]) if 'datetime' in df.columns else ""
         }
 
         logger.info(
-            f"[Indicators] 현재가: ${current_close:,.2f}, SMA5: ${sma5_current:,.2f}, SMA60: ${sma60_current:,.2f} "
-            f"({'상승중' if is_sma60_rising else '하락중'}), 캔들등락: {candle_change*100:+.2f}%, 전일비: {daily_change*100:+.2f}%, "
-            f"낙폭률: {drawdown_rate*100:+.2f}%, 반등폭: {rebound_rate*100:+.2f}%"
+            f"[Indicators] 기준완성봉({eval_candle_date}): 종가 ${eval_close:,.2f}, 캔들등락: {candle_change*100:+.2f}%, 전일비: {daily_change*100:+.2f}% | "
+            f"실시간가: ${current_close:,.2f} | SMA5: ${sma5_eval:,.2f}, SMA60: ${sma60_eval:,.2f} "
+            f"({'상승중' if is_sma60_rising else '하락중'}), 낙폭률: {drawdown_rate*100:+.2f}%, 반등폭: {rebound_rate*100:+.2f}%"
         )
         return indicators
 

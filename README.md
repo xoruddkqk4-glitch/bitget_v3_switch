@@ -43,9 +43,9 @@
 ## 📈 3. 전략별 세부 매매 조건
 
 ### **A 전략: Long DCA (`strategy/strategy_a_long.py`)**
-1. **진입 조건 (OR):**
-   * 당일 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$)
-   * 전일 대비 등락률 $\le -3.0\%$ ($\text{종가}/\text{전일종가} - 1 \le -0.030$)
+1. **진입 조건 (OR, 전일 마감 완성봉 기준):**
+   * 전일 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$)
+   * 전일 대비 등락률 $\le -3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \le -0.030$)
 2. **2단계 스마트 트레일링 청산 규칙:**
    * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
      * **60일선 상승 중:** Target = $SMA_5 \times 1.02$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
@@ -58,9 +58,9 @@
 ---
 
 ### **B 전략: Short DCA (`strategy/strategy_b_short.py`)**
-1. **진입 조건 (OR):**
-   * 당일 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$)
-   * 전일 대비 등락률 $\ge +3.0\%$ ($\text{종가}/\text{전일종가} - 1 \ge +0.030$)
+1. **진입 조건 (OR, 전일 마감 완성봉 기준):**
+   * 전일 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$)
+   * 전일 대비 등락률 $\ge +3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \ge +0.030$)
 2. **2단계 스마트 트레일링 청산 규칙 (대칭 구조):**
    * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
      * **60일선 상승 중 (단기 눌림):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
@@ -333,3 +333,24 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 - **검증 결과**:
   - `python -m py_compile main.py manager/trader.py utils/excel_logger.py` 구문 컴파일 에러 0건 통과
   - `python main.py --update-chart` CLI 테스트 실행 및 `trade_history.xlsx` 내 '손익차트' 시트 정상 생성 검증 완료
+
+## [2026-10-09 16:55] 업데이트 이력 (Commit ID: 4ea1e1d)
+- **수정 내용**: 
+  - **일봉 마감 신호 평가 기준점 정상화 (당일 미완성봉 -> 전일 마감 완성봉)**:
+    - 문제 원인: 기존 코드가 당일 아침 막 열린 미완성 일봉(`df.iloc[-1]`)을 기준으로 등락률을 산출하여, 전일 발생한 대폭락(-11.13%)이 누락되고 매수/더미 신호가 발생하지 않던 결함 확인
+    - `strategy/indicator.py`:
+      * `candle_change`(음봉/양봉 여부) 및 `daily_change`(전일비 등락률) 산출 기준을 방금 09:00 마감 완료된 **전일 완성봉(`df.iloc[-2]`)** 및 전전일 종가(`df.iloc[-3]`)로 변경
+      * 일봉 5일선(`sma5`), 60일선(`sma60`) 및 60일선 상승 추세 판정도 전일 마감 완성봉 기준으로 일원화
+      * 신호 발생 후 주문 집행 및 평가손익 계산에 사용되는 `current_price`는 오늘 실시간 현재가(`df.iloc[-1]`)를 유지
+      * 지표 딕셔너리의 `candle_date`에 평가 대상 완성봉 일시(`df['datetime'].iloc[-2]`) 명시
+    - `main.py`:
+      * 텔레그램 일일 보고서 템플릿에 `일봉 기준일: YYYY-MM-DD (전일 마감 완성봉)` 및 `실시간 현재가 / 기준봉 종가`를 분리하여 명확하게 표기하도록 개선
+    - `README.md`: 섹션 3의 A/B 전략 진입 조건 설명에 전일 마감 완성봉 기준 명시
+    - `docs/implementation/implementation_plan.md`: 전일 완성봉 기준점 정상화 상세 분석 및 구현 계획서 작성
+- **검증 결과**:
+  - `python -m py_compile strategy/indicator.py main.py manager/trader.py` 구문 검사 오류 0건 통과
+  - Bitget 실제 `SOXL/USDT:USDT` 90일 일봉 데이터 주입 단위 테스트 수행:
+    * 기준 완성봉 일시: `2026-10-08 09:00:00 (KST)`
+    * 캔들 등락률: `-11.13%`, 전일 대비 등락률: `-11.13%` (어제 폭락 정상 포착)
+    * 롱 진입 신호 판정: `Entry signal met: True` (음봉 하락 및 전일비 급락 동시 충족으로 정상 발생 확인)
+

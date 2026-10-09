@@ -1,6 +1,6 @@
-# `bitget_v3_switch` 2단계 스마트 트레일링 익절 (1차/2차 매도) 구현 계획서
+# `bitget_v3_switch` 일봉 기준점(어제 완성봉) 정상화 및 매수 로직 개선 구현 계획서
 
-본 문서는 V3+(Long DCA) 및 V3-(Short DCA) 전략에서 일봉 기준 1차 목표가 달성 시 조기 익절을 방지하고, 4시간봉 5MA 추세 추종 및 최소 이익 보존선을 활용하여 추세를 끝까지 극대화하는 **2단계 스마트 트레일링 매도(청산) 시스템**의 상세 구현 계획서입니다.
+본 문서는 일봉 마감(매일 09:10~09:15 KST) 시점 평가 시, **당일 미완성 일봉(`df.iloc[-1]`)이 아닌 전일 완성 일봉(`df.iloc[-2]`)을 기준으로 진입/청산 조건을 정상 평가**하도록 지표 산출 및 신호 평가 로직을 바로잡는 상세 구현 계획서입니다.
 
 > [!IMPORTANT]
 > **모드 정책 준수 안내 (`/ask` 전용)**
@@ -9,163 +9,87 @@
 
 ---
 
-## 1. 시스템 아키텍처 및 2단계 청산 워크플로우
+## 1. 문제 원인 상세 분석 (Issue Analysis)
 
-```mermaid
-flowchart TD
-    Start["Crontab 5분 주기 실행 (*/5 * * * *)"] --> CheckTime{"현재 시각이 09:10 ~ 09:15 KST 사이인가?"}
+### 1-1. 사용자 제기 현상
+* "지금 매수 조건의 기준이 당일 일봉인 거 아니야? 어제 -10% 하락했는데도 매수가 일어나지 않았어."
 
-    %% 1단계 일봉 마감 평가
-    CheckTime -- Yes (하루 1회 일봉 마감) --> EvalStage1["일봉 1차 매도 조건 평가<br>(Strategy A & Strategy B)"]
-    
-    EvalStage1 --> CondLong{"전략 A 롱 청산 상태?"}
-    CondLong -- "상황 1 (상승장 익절) or 상황 3 (과낙폭 반등)" --> SetTrailingA["state.json에 trailing_mode_A = True<br>trailing_base_price_A = 1차목표가 저장<br>(포지션 유지, 2단계 감시 돌입)"]
-    CondLong -- "상황 2 (하락장 완만한 하락)" --> ExitMildA["즉시 시장가 전량 청산 (본탈)<br>state.json 리셋"]
-    CondLong -- "조건 미충족" --> PassA["청산 패스"]
-
-    EvalStage1 --> CondShort{"전략 B 숏 청산 상태?"}
-    CondShort -- "상황 1 (상승 눌림) or 상황 3 (과반등 눌림)" --> SetTrailingB["state.json에 trailing_mode_B = True<br>trailing_base_price_B = 1차목표가 저장<br>(포지션 유지, 2단계 감시 돌입)"]
-    CondShort -- "상황 2 (하락장 완만한 반등)" --> ExitMildB["즉시 시장가 전량 청산 (본탈)<br>state.json 리셋"]
-    CondShort -- "조건 미충족" --> PassB["청산 패스"]
-
-    SetTrailingA --> EvalEntry["신규 매수(진입) 신호 평가<br>(더미 소진 or 실제 매수)"]
-    ExitMildA --> EvalEntry
-    PassA --> EvalEntry
-    SetTrailingB --> EvalEntry
-    ExitMildB --> EvalEntry
-    PassB --> EvalEntry
-    EvalEntry --> EndDaily["일봉 평가 완료 및 상태 저장"]
-
-    %% 2단계 5분 주기 감시
-    CheckTime -- No (그 외 모든 5분 주기) --> CheckActive{"A 또는 B의 trailing_mode == True?"}
-    CheckActive -- No --> QuickExit["즉시 프로세스 종료 (0.1초, 서버 부하 0%)"]
-    CheckActive -- Yes --> Fetch4H["4시간봉 최근 20개 OHLCV 수집<br>4H SMA5 및 현재가 계산"]
-
-    Fetch4H --> CheckStage2A{"trailing_mode_A == True?"}
-    CheckStage2A -- Yes --> CheckCondA{"[4H 5MA 하향 이탈] OR<br>[최소 이익 보존선 하회]?"}
-    CheckCondA -- Yes --> ExecuteExitA["롱 시장가 전량 청산!<br>trailing_mode_A = False 리셋<br>엑셀 & 텔레그램 익절 기록"]
-    CheckCondA -- No --> HoldA["롱 추세 지속 중: 홀딩"]
-    CheckStage2A -- No --> CheckStage2B
-
-    HoldA --> CheckStage2B{"trailing_mode_B == True?"}
-    ExecuteExitA --> CheckStage2B
-    CheckStage2B -- Yes --> CheckCondB{"[4H 5MA 상향 돌파] OR<br>[최소 이익 보존선 상회]?"}
-    CheckCondB -- Yes --> ExecuteExitB["숏 시장가 전량 청산!<br>trailing_mode_B = False 리셋<br>엑셀 & 텔레그램 익절 기록"]
-    CheckCondB -- No --> HoldB["숏 추세 지속 중: 홀딩"]
-    CheckStage2B -- No --> End5m["5분 감시 완료"]
-    HoldB --> End5m
-    ExecuteExitB --> End5m
+### 1-2. 실제 비트겟 캔들 데이터 검증 (`SOXL/USDT:USDT` 1일봉)
+```text
+              datetime    open    high     low   close    등락률(종가/시가)  전일비(종가/전일종가)
+[index 2]  2026-10-07  164.41  165.61  151.62  160.23      -2.54%             -2.54%
+[index 3]  2026-10-08  160.23  161.44  136.57  142.40     -11.13% (폭락)     -11.13% (폭락)  <-- 어제 완성봉!
+[index 4]  2026-10-09  142.40  151.32  141.65  150.65      +5.79% (반등)      +5.79% (반등)  <-- 오늘 실시간 진행 중
 ```
 
----
+### 1-3. 기존 코드 결함 분석 (`strategy/indicator.py:29-45`)
+* **기존 코드 로직:**
+  ```python
+  current_close = float(close_series.iloc[-1]) # 오늘 09:10 실시간가 (index 4)
+  current_open = float(df['open'].iloc[-1])    # 오늘 09:00 시가 (index 4)
+  prev_close = float(close_series.iloc[-2])    # 어제 종가 (index 3)
 
-## 2. 전략별 1차 및 2차 세부 매도 규칙 명세
+  candle_change = (current_close / current_open) - 1.0 # 오늘 10분간의 등락률
+  daily_change = (current_close / prev_close) - 1.0   # 어제 종가 대비 오늘 10분간의 등락률
+  ```
+* **결과:**
+  - 봇이 09:10에 실행되었을 때, 어제 하루 동안 형성되어 방금 마감된 **`index 3`(-11.13% 대폭락 봉)**을 평가한 것이 아니라, 오늘 09:00에 막 생성된 **`index 4`(오늘 10분짜리 봉)**의 시가 대비 등락률을 평가했습니다.
+  - 오늘 아침 시점에는 가격이 반등세(+5.79%)였으므로, `candle_change`와 `daily_change` 모두 음봉 기준(-1.5%)과 급락 기준(-3.0%)에 도달하지 못해 진입 신호가 누락되었습니다.
 
-### 1) 전략 A (Long DCA: V3+)
-
-* **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
-  * **상황 1 (60일선 상승 중):** 현재가 $\ge SMA5_{1d} \times 1.02$ 도달 시  
-    $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, `trailing_base_price = SMA5 * 1.02`)
-  * **상황 2 (60일선 하락 & 완만한 하락 $\text{낙폭률} > -30\%$):** 현재가 $\le SMA5_{1d} \times 0.99$ 도달 시  
-    $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절, 2단계 없음)**
-  * **상황 3 (60일선 하락 & 과낙폭 $\text{낙폭률} \le -30\%$):** 현재가 $\ge SMA5_{1d} \times 1.03$ 도달 시  
-    $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, `trailing_base_price = SMA5 * 1.03`)
-* **2단계 5분 주기 감시 (5분 간격 Crontab 실행):**
-  * 다음 **둘 중 어느 하나라도 만족 시 즉시 롱 시장가 전량 매도**:
-    1. **추세 꺾임:** 현재가 $<$ 4시간봉 $5MA$ 하향 이탈
-    2. **최소 이익 보존선 방어:** 현재가 $\le$ `trailing_base_price` 하회 (슬리피지 방어 버퍼 적용)
-
----
-
-### 2) 전략 B (Short DCA: V3-)
-
-* **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
-  * **상황 1 (60일선 상승 중 단기 눌림):** 현재가 $\le SMA5_{1d} \times 0.98$ 도달 시  
-    $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, `trailing_base_price = SMA5 * 0.98`)
-  * **상황 2 (60일선 하락 & 완만한 반등 $\text{반등폭} < +30\%$):** 현재가 $\le SMA5_{1d} \times 1.01$ 도달 시  
-    $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절, 2단계 없음)**
-  * **상황 3 (60일선 하락 & 과반등 후 깊은 눌림 $\text{반등폭} \ge +30\%$):** 현재가 $\le SMA5_{1d} \times 0.97$ 도달 시  
-    $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, `trailing_base_price = SMA5 * 0.97`)
-* **2단계 5분 주기 감시 (5분 간격 Crontab 실행):**
-  * 다음 **둘 중 어느 하나라도 만족 시 즉시 숏 시장가 전량 청산**:
-    1. **추세 반등:** 현재가 $>$ 4시간봉 $5MA$ 상향 돌파
-    2. **최소 이익 보존선 방어:** 현재가 $\ge$ `trailing_base_price` 상회 (상한선 방어)
+### 1-4. 더미(Dummy) 메커니즘 동작 유의사항
+* 신호가 정상 인식되더라도 `state.json` 상에서 `dummy_count`가 0인 경우:
+  - 1회차 신호: **더미 1차 소진 (0원 매수)**
+  - 2회차 신호: **더미 2차 소진 (0원 매수)**
+  - 3회차 신호부터: **실제 코인 1.0 Unit 매수**
+* 따라서 어제 신호가 정상 인식되었더라도 실제 주문이 아닌 '더미 1회차 소진'이 기록되는 것이 정상 동작이며, 현재는 신호 자체 판정이 누락되어 더미 소진조차 발생하지 않았던 것입니다.
 
 ---
 
-## 3. 영속성 데이터 스키마 확장 (`state.json`)
+## 2. 개선 및 수정 설계 (Solution Design)
 
-각 전략 객체(`strategy_A`, `strategy_B`)에 2단계 트레일링 상태를 안전하게 영속 저장합니다.
+### 2-1. 지표 산출 기준 분리 (`strategy/indicator.py`)
+1. **신호 판정용 일봉 (어제 완성봉, `iloc[-2]`):**
+   * `eval_open = df['open'].iloc[-2]` (어제 시가)
+   * `eval_close = df['close'].iloc[-2]` (어제 종가)
+   * `prev_eval_close = df['close'].iloc[-3]` (그저께 종가)
+   * `candle_change = (eval_close / eval_open) - 1.0` (어제 음봉/양봉 등락률)
+   * `daily_change = (eval_close / prev_eval_close) - 1.0` (어제 전일 대비 등락률)
+   * `candle_date = df['datetime'].iloc[-2]` (판정 대상 완성봉 날짜 명시)
+2. **이동평균선 (완성봉 기준 지표):**
+   * `sma5 = sma5_series.iloc[-2]` (어제 마감 기준 5일선)
+   * `sma60 = sma60_series.iloc[-2]` (어제 마감 기준 60일선)
+   * `sma60_prev = sma60_series.iloc[-3]` (그저께 마감 기준 60일선)
+   * `is_sma60_rising = sma60 > sma60_prev`
+3. **주문 집행용 실시간 현재가 (`iloc[-1]`):**
+   * `current_price = df['close'].iloc[-1]` (주문 체결 및 평가손익 계산용 실시간 현재가 유지)
 
-```json
-{
-  "strategy_A": {
-    "cycle_id": 1,
-    "dummy_count": 0,
-    "executed_units": 2,
-    "avg_price": 38.5,
-    "total_qty": 52.4,
-    "cycle_peak": 42.0,
-    "trailing_mode": true,
-    "trailing_base_price": 40.8,
-    "trailing_target_price": 40.8,
-    "trailing_reason": "60일선 상승 중 1차 목표가($40.80) 도달 후 2단계 추세 감시",
-    "trailing_triggered_at": "2026-10-08 09:13:00"
-  },
-  "strategy_B": {
-    "cycle_id": 1,
-    "dummy_count": 0,
-    "executed_units": 0,
-    "avg_price": 0.0,
-    "total_qty": 0.0,
-    "cycle_trough": 0.0,
-    "trailing_mode": false,
-    "trailing_base_price": 0.0,
-    "trailing_target_price": 0.0,
-    "trailing_reason": "",
-    "trailing_triggered_at": null
-  },
-  "last_updated": "2026-10-08 09:13:00"
-}
-```
+### 2-2. 텔레그램 및 엑셀 로깅 메시지 명확화
+* 텔레그램 일일 보고서에 **"평가 대상 완성 일봉: YYYY-MM-DD"**와 **"실시간 주문 기준 현재가: $XXX.XX"**를 명확히 구분 표시하여 사용자가 혼선 없이 신호 결과를 확인할 수 있도록 개선합니다.
 
 ---
 
-## 4. 파일별 세부 수정 계획
+## 3. 수정 대상 파일 및 변경 요약
 
-| 파일 경로 | 수정 목적 및 내용 |
+| 파일 경로 | 수정 내용 |
 | :--- | :--- |
-| **`config.py`** | • 4시간봉 설정 상수 추가 (`TIMEFRAME_4H = "4h"`, `CANDLE_LIMIT_4H = 30`, `SMA_4H_PERIOD = 5`)<br/>• 일봉 1차 평가 시간 윈도우 상수 추가 (`DAILY_EVAL_HOUR_KST = 9`, `DAILY_EVAL_START_MIN = 10`, `DAILY_EVAL_END_MIN = 15`) |
-| **`strategy/indicator.py`** | • `calculate_4h_indicators(df_4h)` 메서드 추가: 4시간봉 5MA(`sma5_4h`), 직전 4시간봉 5MA 및 현재가 이탈/돌파 판단 로직 구현 |
-| **`strategy/strategy_a_long.py`** | • `check_exit_signal`을 1차 평가(`check_stage1_signal`)와 2차 평가(`check_stage2_signal`)로 분리<br/>• 상황 1, 3은 `ENTER_STAGE2`, 상황 2는 `IMMEDIATE_EXIT` 반환 |
-| **`strategy/strategy_b_short.py`** | • 숏 전략에 맞게 1차 평가(`check_stage1_signal`)와 2차 평가(`check_stage2_signal`) 대칭 구현<br/>• 4H 5MA 상향 돌파 및 상한선(`trailing_base_price`) 도달 판정 |
-| **`manager/cycle_manager.py`** | • `set_trailing_mode(strategy_name, target_price, base_price, reason)` 메서드 추가<br/>• `clear_trailing_mode(strategy_name)` 메서드 추가<br/>• `is_any_trailing_active()` 헬퍼 메서드 추가 |
-| **`manager/trader.py`** | • `process_stage2_monitoring()` 신규 메서드 추가 (5분 주기 전용 청산 감시)<br/>• 1차 충족 시 청산 대신 `cycle_manager.set_trailing_mode` 활성화<br/>• 2차 충족 시 시장가 전량 청산 및 사이클 초기화 |
-| **`main.py`** | • CLI 옵션에 `--cron` 추가: 5분 단위 실행 최적화 (09:10~09:15 외에는 trailing 미작동 시 0.1초 즉시 종료)<br/>• `--loop` 실행 시 5분 주기로 스케줄러 자동 구동 |
+| **`strategy/indicator.py`** | • `IndicatorCalculator.calculate()` 내 `candle_change`, `daily_change`, `sma5`, `sma60`, `candle_date` 산출 기준을 직전 완성봉(`iloc[-2]`)으로 변경<br/>• 실시간 집행용 `current_price`는 `iloc[-1]` 유지 |
+| **`manager/trader.py`** | • 로그 및 엑셀 기록 시 평가 기준일(`indicators['candle_date']`)과 실시간 체결가 매핑 일관성 확인 |
+| **`main.py`** | • 텔레그램 보고서의 일봉 기준일 및 현재가 표기 시 완성봉 기준 등락률 명확히 출력 |
 
 ---
 
-## 5. 단계별 구현 및 검증 로드맵 (`/apply` 실행 시)
+## 4. 검증 계획 (Verification Plan)
 
-1. **Step 1: 환경 설정 및 지표 계산기 확장 (`config.py`, `strategy/indicator.py`)**
-   - 4시간봉 파라미터 등록 및 `calculate_4h_indicators` 단위 테스트
-   - *검증: `python -m py_compile config.py strategy/indicator.py`*
-2. **Step 2: A/B 전략 모듈 1차/2차 분기 구현 (`strategy/strategy_a_long.py`, `strategy/strategy_b_short.py`)**
-   - 롱/숏 대칭 2단계 청산 로직 구현
-   - *검증: `python -m py_compile strategy/strategy_a_long.py strategy/strategy_b_short.py`*
-3. **Step 3: 상태 관리자 확장 (`manager/cycle_manager.py`, `state.json`)**
-   - 트레일링 플래그 및 기준 가격 영속성 입출력 로직 구현
-   - *검증: `python -m py_compile manager/cycle_manager.py`*
-4. **Step 4: 주문 관리자 및 5분 모니터링 파이프라인 구현 (`manager/trader.py`)**
-   - 09:10~09:15 일봉 마감 평가와 5분 주기 2차 감시 파이프라인 분리
-   - *검증: `python -m py_compile manager/trader.py`*
-5. **Step 5: 메인 엔트리 및 크론탭 CLI 지원 (`main.py`)**
-   - `--cron`, `--loop`, `--run-once` 지원
-   - *검증: `python -m py_compile main.py` 및 모의 4H/일봉 데이터 종합 시뮬레이션 검증*
+1. **정적 문법 검증:**
+   - `python -m py_compile strategy/indicator.py manager/trader.py main.py`
+2. **실제 비트겟 캔들 단위 테스트:**
+   - 최근 5일 캔들 데이터를 주입하여 어제(10월 8일) 캔들의 `candle_change = -11.13%`, `daily_change = -11.13%`가 정상 산출되고 롱 진입 신호가 올바르게 발생하는지 확인
+3. **시뮬레이션 모의 실행:**
+   - `python main.py --run-once`를 실행하여 롱 진입 신호 발생 및 더미 1차 소진(또는 실전 매수) 로그 출력 확인
 
 ---
 
-## 6. 사용자 확인 및 승인 대기
+## 5. 실행 대기 안내
 
-* 본 계획서는 `/ask` 정책에 따라 작성되었으며, 사용자의 명시적인 승인 없이 코드가 자동으로 실행되지 않습니다.
-* 위 계획대로 소스 코드를 반영하고 구현을 진행하시려면 **`/apply`** 명령어를 입력해 주시기 바랍니다.
+* 본 계획서는 `/ask` 정책에 따라 작성되었으며, 자동으로 코드를 수정하지 않습니다.
+* 위 계획대로 코드를 수정하고 적용하시려면 **`/apply`** 명령어를 입력해 주시기 바랍니다.
