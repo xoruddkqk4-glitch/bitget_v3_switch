@@ -27,6 +27,7 @@ from config import (
 from utils.logger import logger
 from utils.notifier import notifier
 from utils.excel_logger import excel_logger
+from utils.formatters import format_progress_single_track
 from api.bitget_client import bitget_client
 from strategy.indicator import IndicatorCalculator
 from manager.cycle_manager import cycle_manager
@@ -159,6 +160,16 @@ def run_pipeline() -> bool:
         last_pct_b = updated_state_b.get('last_realized_pct', 0.0)
         last_closed_b_str = f" (직전 확정: {last_pnl_b:+,.2f} USD, {last_pct_b:+.2f}%)" if last_pnl_b != 0 else ""
 
+        # 차수 진행 상태 인디케이터 생성
+        progress_a = format_progress_single_track(
+            dummy_count=updated_state_a.get('dummy_count', 0),
+            executed_units=updated_state_a.get('executed_units', 0)
+        )
+        progress_b = format_progress_single_track(
+            dummy_count=updated_state_b.get('dummy_count', 0),
+            executed_units=updated_state_b.get('executed_units', 0)
+        )
+
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 1차 마감 보고]</b>\n\n"
             f"• <b>기준 일시:</b> {kst_str}\n"
@@ -171,13 +182,13 @@ def run_pipeline() -> bool:
             f"• <b>SMA5:</b> ${indicators['sma5']:,.2f} | <b>SMA60:</b> ${indicators['sma60']:,.2f} "
             f"({'상승' if indicators['is_sma60_rising'] else '하락'})\n\n"
             f"<b>[전략 A - Long DCA]{trailing_info_a}</b>\n"
-            f"• 싸이클 #{updated_state_a.get('cycle_id')}: 더미 {updated_state_a.get('dummy_count')}/2, "
-            f"실행 {updated_state_a.get('executed_units')}유닛, 보유 {qty_a:,.4f} Qty\n"
+            f"• 싸이클 #{updated_state_a.get('cycle_id')} | 보유: {qty_a:,.4f} Qty\n"
+            f"• <b>매수 차수:</b> {progress_a}\n"
             f"• 평단가: ${avg_a:,.2f} | <b>평가손익:</b> {pnl_str_a}\n"
             f"• <b>누적 실현손익:</b> {cum_pnl_a:+,.2f} USD{last_closed_a_str}\n\n"
             f"<b>[전략 B - Short DCA]{trailing_info_b}</b>\n"
-            f"• 싸이클 #{updated_state_b.get('cycle_id')}: 더미 {updated_state_b.get('dummy_count')}/2, "
-            f"실행 {updated_state_b.get('executed_units')}유닛, 보유 {qty_b:,.4f} Qty\n"
+            f"• 싸이클 #{updated_state_b.get('cycle_id')} | 보유: {qty_b:,.4f} Qty\n"
+            f"• <b>매수 차수:</b> {progress_b}\n"
             f"• 평단가: ${avg_b:,.2f} | <b>평가손익:</b> {pnl_str_b}\n"
             f"• <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n\n"
             f"<b>[금일 집행 내역]</b>\n"

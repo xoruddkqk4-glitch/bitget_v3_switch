@@ -15,6 +15,7 @@ from strategy.strategy_b_short import StrategyBShort
 from utils.excel_logger import ExcelLogger, excel_logger
 from utils.logger import logger
 from utils.notifier import TelegramNotifier, notifier
+from utils.formatters import format_progress_single_track
 
 KST = timezone(timedelta(hours=9))
 
@@ -209,7 +210,8 @@ class Trader:
                         total_balance=total_balance,
                         note=f"{entry_a_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
                     )
-                    execution_logs.append(f"🟡 [롱 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
+                    bar_a1 = format_progress_single_track(1, 0, include_counts=False)
+                    execution_logs.append(f"🟡 [롱 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 소진: {bar_a1}")
                 else:
                     action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_A")
                     if action_type == "DUMMY":
@@ -225,7 +227,8 @@ class Trader:
                             total_balance=total_balance,
                             note=f"{entry_a_reason} (더미 방어 소진)"
                         )
-                        execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
+                        bar_ad = format_progress_single_track(dummy_count, 0, include_counts=False)
+                        execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 완료: {bar_ad} (더미 {dummy_count}/2)")
                     else:
                         # 실전 매수 집행
                         target_usd = unit_base_usd * weight
@@ -253,7 +256,9 @@ class Trader:
                             total_balance=total_balance,
                             note=f"{entry_a_reason} (투입금액: ${target_usd:,.2f})"
                         )
-                        execution_logs.append(f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
+                        executed_a = self.cycles.get_strategy_state("strategy_A").get("executed_units", 0)
+                        bar_ar = format_progress_single_track(2, executed_a, include_counts=False)
+                        execution_logs.append(f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f}) | {bar_ar} ({executed_a}/10)")
             else:
                 logger.info("[Trader] [Strategy A] 롱 진입 신호 없음")
 
@@ -281,7 +286,8 @@ class Trader:
                         total_balance=total_balance,
                         note=f"{entry_b_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
                     )
-                    execution_logs.append(f"🟡 [숏 1차 더미 이관] 당일 청산 발생으로 신규 싸이클 1차 더미 소진 처리")
+                    bar_b1 = format_progress_single_track(1, 0, include_counts=False)
+                    execution_logs.append(f"🟡 [숏 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 소진: {bar_b1}")
                 else:
                     action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_B")
                     if action_type == "DUMMY":
@@ -297,7 +303,8 @@ class Trader:
                             total_balance=total_balance,
                             note=f"{entry_b_reason} (더미 방어 소진)"
                         )
-                        execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 처리 완료 (현재 더미 {dummy_count}/2)")
+                        bar_bd = format_progress_single_track(dummy_count, 0, include_counts=False)
+                        execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 완료: {bar_bd} (더미 {dummy_count}/2)")
                     else:
                         # 실전 숏 매도 집행
                         target_usd = unit_base_usd * weight
@@ -325,7 +332,9 @@ class Trader:
                             total_balance=total_balance,
                             note=f"{entry_b_reason} (투입금액: ${target_usd:,.2f})"
                         )
-                        execution_logs.append(f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f})")
+                        executed_b = self.cycles.get_strategy_state("strategy_B").get("executed_units", 0)
+                        bar_br = format_progress_single_track(2, executed_b, include_counts=False)
+                        execution_logs.append(f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f}) | {bar_br} ({executed_b}/10)")
             else:
                 logger.info("[Trader] [Strategy B] 숏 진입 신호 없음")
 
