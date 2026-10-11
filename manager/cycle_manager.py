@@ -158,6 +158,27 @@ class CycleManager:
         logger.info(f"[CycleManager] [{strategy_name}] 더미 소진 처리: {s['dummy_count']} / {DUMMY_TARGET}")
         return s["dummy_count"]
 
+    def reset_incomplete_dummy(self, strategy_name: str, trigger_source: str, date_str: str) -> bool:
+        """
+        상대 전략의 실전 매수(BUY_UNIT) 체결 시, 아직 실전 매수에 진입하지 않은 상태(executed_units == 0)의
+        미완성 더미(dummy_count > 0)를 0/2로 초기화합니다.
+        Returns:
+            bool: 초기화가 실제로 수행되었는지 여부
+        """
+        s = self.state.get(strategy_name, {})
+        if s.get("executed_units", 0) == 0 and s.get("dummy_count", 0) > 0:
+            old_dummy = s["dummy_count"]
+            s["dummy_count"] = 0
+            s["last_action"] = "RESET_DUMMY_ON_OPPOSITE_BUY"
+            s["last_action_date"] = date_str
+            self._save_state(self.state)
+            logger.info(
+                f"[CycleManager] [{strategy_name}] 상대 전략({trigger_source}) 실제 매수 체결로 "
+                f"미완성 더미({old_dummy}/2) -> 0/2 초기화 완료"
+            )
+            return True
+        return False
+
     def record_executed_unit(self, strategy_name: str, price: float, qty: float, date_str: str):
         """실제 매수 주문 체결 후 평단가, 수량, 실행 유닛 수를 업데이트합니다."""
         s = self.state[strategy_name]

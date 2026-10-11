@@ -6,7 +6,7 @@ Bitget Hedge Mode 주문(Long/Short 분리 진입/청산) 집행 및 매도 우�
 from typing import Dict, Any, List
 from datetime import datetime, timezone, timedelta
 import pandas as pd
-from config import UNIT_DIVISOR, PRESERVATION_BUFFER_PCT
+from config import UNIT_DIVISOR, PRESERVATION_BUFFER_PCT, MIN_ORDER_USD
 from api.bitget_client import BitgetClient, bitget_client
 from manager.cycle_manager import CycleManager, cycle_manager
 from strategy.indicator import IndicatorCalculator
@@ -38,6 +38,7 @@ class Trader:
         self.strategy_a = StrategyALong()
         self.strategy_b = StrategyBShort()
         self.last_total_balance: float = 0.0
+        self.last_free_margin: float = 0.0
         self.last_unit_base_usd: float = 0.0
 
     def process_daily_cycle(self, indicators: Dict[str, Any]) -> List[str]:
@@ -52,12 +53,16 @@ class Trader:
         current_price = indicators['current_price']
         execution_logs: List[str] = []
 
-        # 1. 총 평가 잔고 및 1 Unit 기준금액 산출
-        total_balance = self.client.fetch_total_balance()
+        # 1. 총 평가 잔고, 실시간 가용 잔고 및 1 Unit 기준금액 산출
+        total_balance, free_margin = self.client.fetch_account_balance()
         unit_base_usd = total_balance / UNIT_DIVISOR
         self.last_total_balance = total_balance
+        self.last_free_margin = free_margin
         self.last_unit_base_usd = unit_base_usd
-        logger.info(f"[Trader] 계좌 총 평가 잔고: ${total_balance:,.2f} | 1.0 Unit 기본금액: ${unit_base_usd:,.2f}")
+        logger.info(
+            f"[Trader] 계좌 총 평가 잔고: ${total_balance:,.2f} | 가용 잔고: ${free_margin:,.2f} | "
+            f"1.0 Unit 기준금액: 단일 ${unit_base_usd:,.2f} / 헤지 ${free_margin / UNIT_DIVISOR:,.2f}"
+        )
 
         # 2. 전고점/전저점 갱신
         self.cycles.update_price_extremes("strategy_A", current_price)
@@ -230,35 +235,71 @@ class Trader:
                         bar_ad = format_progress_single_track(dummy_count, 0, include_counts=False)
                         execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 완료: {bar_ad} (더미 {dummy_count}/2)")
                     else:
-                        # 실전 매수 집행
+                        # 상대편(숏) 포지션 보유 여부 확인 (Hedge 모드 양방향 상태)
+                        curr_state_b = self.cycles.get_strategy_state("strategy_B")
+                        opposite_qty = curr_state_b.get("total_qty", 0.0)
+                        if opposite_qty > 0:
+                            unit_base_usd = free_margin / UNIT_DIVISOR
+                            basis_label = "가용 잔고(헤지)"
+                        else:
+                            unit_base_usd = total_balance / UNIT_DIVISOR
+                            basis_label = "총 평가 잔고(단일)"
+
                         target_usd = unit_base_usd * weight
-                        target_qty = target_usd / current_price if current_price > 0 else 0.0
-                        order = self.client.create_hedge_order(
-                            side='buy',
-                            amount=target_qty,
-                            pos_side='long',
-                            is_close=False
-                        )
-                        self.cycles.record_executed_unit(
-                            strategy_name="strategy_A",
-                            price=current_price,
-                            qty=target_qty,
-                            date_str=date_str
-                        )
-                        self.excel.append_record(
-                            date_str=date_str,
-                            strategy_name="strategy_A",
-                            event_type="BUY_UNIT",
-                            price=current_price,
-                            qty=target_qty,
-                            unit_label=unit_label,
-                            dummy_status="2 / 2",
-                            total_balance=total_balance,
-                            note=f"{entry_a_reason} (투입금액: ${target_usd:,.2f})"
-                        )
-                        executed_a = self.cycles.get_strategy_state("strategy_A").get("executed_units", 0)
-                        bar_ar = format_progress_single_track(2, executed_a, include_counts=False)
-                        execution_logs.append(f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f}) | {bar_ar} ({executed_a}/10)")
+
+                        # 최소 주문금액 가드
+                        if target_usd < MIN_ORDER_USD:
+                            msg = f"⚠️ [롱 주문 스킵] {unit_label}: 주문금액(${target_usd:,.2f})이 최소 한도(${MIN_ORDER_USD:,.2f}) 미만입니다. ({basis_label} 기준)"
+                            logger.warning(f"[Trader] {msg}")
+                            execution_logs.append(msg)
+                        else:
+                            # 실전 매수 집행
+                            target_qty = target_usd / current_price if current_price > 0 else 0.0
+                            order = self.client.create_hedge_order(
+                                side='buy',
+                                amount=target_qty,
+                                pos_side='long',
+                                is_close=False
+                            )
+                            self.cycles.record_executed_unit(
+                                strategy_name="strategy_A",
+                                price=current_price,
+                                qty=target_qty,
+                                date_str=date_str
+                            )
+                            self.excel.append_record(
+                                date_str=date_str,
+                                strategy_name="strategy_A",
+                                event_type="BUY_UNIT",
+                                price=current_price,
+                                qty=target_qty,
+                                unit_label=unit_label,
+                                dummy_status="2 / 2",
+                                total_balance=total_balance,
+                                note=f"{entry_a_reason} (투입: ${target_usd:,.2f}, {basis_label})"
+                            )
+                            executed_a = self.cycles.get_strategy_state("strategy_A").get("executed_units", 0)
+                            bar_ar = format_progress_single_track(2, executed_a, include_counts=False)
+                            execution_logs.append(
+                                f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty "
+                                f"(${target_usd:,.1f}) [{basis_label}] | {bar_ar} ({executed_a}/10)"
+                            )
+
+                            # 체결 직후: 상대 전략(B 숏)의 미완성 더미 초기화 트리거
+                            if self.cycles.reset_incomplete_dummy("strategy_B", trigger_source="strategy_A", date_str=date_str):
+                                bar_reset = format_progress_single_track(0, 0, include_counts=False)
+                                execution_logs.append(f"🔄 [숏 더미 초기화] 롱 실전 매수 체결로 숏 미완성 더미 리셋: {bar_reset} (더미 0/2)")
+                                self.excel.append_record(
+                                    date_str=date_str,
+                                    strategy_name="strategy_B",
+                                    event_type="RESET_DUMMY",
+                                    price=None,
+                                    qty=None,
+                                    unit_label="더미 초기화 (0/2)",
+                                    dummy_status="0 / 2",
+                                    total_balance=total_balance,
+                                    note="롱 실전 매수 체결에 따른 숏 미완성 더미 0/2 초기화"
+                                )
             else:
                 logger.info("[Trader] [Strategy A] 롱 진입 신호 없음")
 
@@ -306,35 +347,71 @@ class Trader:
                         bar_bd = format_progress_single_track(dummy_count, 0, include_counts=False)
                         execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 완료: {bar_bd} (더미 {dummy_count}/2)")
                     else:
-                        # 실전 숏 매도 집행
+                        # 상대편(롱) 포지션 보유 여부 확인 (Hedge 모드 양방향 상태)
+                        curr_state_a = self.cycles.get_strategy_state("strategy_A")
+                        opposite_qty = curr_state_a.get("total_qty", 0.0)
+                        if opposite_qty > 0:
+                            unit_base_usd = free_margin / UNIT_DIVISOR
+                            basis_label = "가용 잔고(헤지)"
+                        else:
+                            unit_base_usd = total_balance / UNIT_DIVISOR
+                            basis_label = "총 평가 잔고(단일)"
+
                         target_usd = unit_base_usd * weight
-                        target_qty = target_usd / current_price if current_price > 0 else 0.0
-                        order = self.client.create_hedge_order(
-                            side='sell',
-                            amount=target_qty,
-                            pos_side='short',
-                            is_close=False
-                        )
-                        self.cycles.record_executed_unit(
-                            strategy_name="strategy_B",
-                            price=current_price,
-                            qty=target_qty,
-                            date_str=date_str
-                        )
-                        self.excel.append_record(
-                            date_str=date_str,
-                            strategy_name="strategy_B",
-                            event_type="BUY_UNIT",
-                            price=current_price,
-                            qty=target_qty,
-                            unit_label=unit_label,
-                            dummy_status="2 / 2",
-                            total_balance=total_balance,
-                            note=f"{entry_b_reason} (투입금액: ${target_usd:,.2f})"
-                        )
-                        executed_b = self.cycles.get_strategy_state("strategy_B").get("executed_units", 0)
-                        bar_br = format_progress_single_track(2, executed_b, include_counts=False)
-                        execution_logs.append(f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty (${target_usd:,.1f}) | {bar_br} ({executed_b}/10)")
+
+                        # 최소 주문금액 가드
+                        if target_usd < MIN_ORDER_USD:
+                            msg = f"⚠️ [숏 주문 스킵] {unit_label}: 주문금액(${target_usd:,.2f})이 최소 한도(${MIN_ORDER_USD:,.2f}) 미만입니다. ({basis_label} 기준)"
+                            logger.warning(f"[Trader] {msg}")
+                            execution_logs.append(msg)
+                        else:
+                            # 실전 숏 매도 집행
+                            target_qty = target_usd / current_price if current_price > 0 else 0.0
+                            order = self.client.create_hedge_order(
+                                side='sell',
+                                amount=target_qty,
+                                pos_side='short',
+                                is_close=False
+                            )
+                            self.cycles.record_executed_unit(
+                                strategy_name="strategy_B",
+                                price=current_price,
+                                qty=target_qty,
+                                date_str=date_str
+                            )
+                            self.excel.append_record(
+                                date_str=date_str,
+                                strategy_name="strategy_B",
+                                event_type="BUY_UNIT",
+                                price=current_price,
+                                qty=target_qty,
+                                unit_label=unit_label,
+                                dummy_status="2 / 2",
+                                total_balance=total_balance,
+                                note=f"{entry_b_reason} (투입: ${target_usd:,.2f}, {basis_label})"
+                            )
+                            executed_b = self.cycles.get_strategy_state("strategy_B").get("executed_units", 0)
+                            bar_br = format_progress_single_track(2, executed_b, include_counts=False)
+                            execution_logs.append(
+                                f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty "
+                                f"(${target_usd:,.1f}) [{basis_label}] | {bar_br} ({executed_b}/10)"
+                            )
+
+                            # 체결 직후: 상대 전략(A 롱)의 미완성 더미 초기화 트리거
+                            if self.cycles.reset_incomplete_dummy("strategy_A", trigger_source="strategy_B", date_str=date_str):
+                                bar_reset = format_progress_single_track(0, 0, include_counts=False)
+                                execution_logs.append(f"🔄 [롱 더미 초기화] 숏 실전 매수 체결로 롱 미완성 더미 리셋: {bar_reset} (더미 0/2)")
+                                self.excel.append_record(
+                                    date_str=date_str,
+                                    strategy_name="strategy_A",
+                                    event_type="RESET_DUMMY",
+                                    price=None,
+                                    qty=None,
+                                    unit_label="더미 초기화 (0/2)",
+                                    dummy_status="0 / 2",
+                                    total_balance=total_balance,
+                                    note="숏 실전 매수 체결에 따른 롱 미완성 더미 0/2 초기화"
+                                )
             else:
                 logger.info("[Trader] [Strategy B] 숏 진입 신호 없음")
 

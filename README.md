@@ -21,18 +21,26 @@
 
 ## 🛡️ 2. 자금 관리 및 더미(Dummy) 메커니즘
 
-1. **동적 1.0 Unit 산출 공식:**
-   $$\text{Current Unit Size (\$)} = \frac{\text{현재 계좌 총 평가 잔고 (Free Margin + Position Margin)}}{10}$$
-   * 매 진입 시점마다 실시간 총 평가 잔고를 수집하여 1 Unit의 기본 $ 금액을 동적으로 재계산합니다.
+1. **양방향 헤지 동적 1.0 Unit 산출 공식:**
+   $$\text{Current Unit Size (\$)} = 
+   \begin{cases} 
+   \cfrac{\text{Free Margin (실시간 가용 잔고)}}{10.0}, & \text{if 상대편 포지션 보유 중 (양방향 헤지, opposite\_qty > 0)} \\[10pt]
+   \cfrac{\text{Total Balance (총 평가 잔고)}}{10.0}, & \text{if 상대편 포지션 없음 (단일 포지션, opposite\_qty = 0)}
+   \end{cases}$$
+   * 매 진입 시점마다 실시간 잔고를 수집하여 상대편 포지션 유무에 따라 1 Unit 기본 금액을 동적으로 재계산합니다.
+   * **최소 주문금액 가드:** 주문금액이 최소 한도(`MIN_ORDER_USD = 5.0 USDT`) 미만일 경우 안전 스킵(Skip)합니다.
 
 2. **유닛 가중치 (실제 매수 회차 기준):**
    * **더미 1~2회차:** $\$0$ (0원 매수, 더미 카운트만 소진)
    * **실제 매수 1~4회차 (`executed_units`: 0~3):** $1.0 \times \text{Unit Size}$ (기본 1 유닛)
    * **실제 매수 5회차 이상 (`executed_units` $\ge 4$):** $1.25 \times \text{Unit Size}$ (비중 확대 유닛 적용)
 
-3. **더미(Dummy) 방어 시스템:**
+3. **더미(Dummy) 방어 시스템 및 미완성 더미 리셋:**
    * 새 싸이클 시작 후 진입 조건이 충족되더라도 **1~2회차 신호는 0원 매수(더미 소진)** 처리합니다.
    * **3회차 신호부터 실제 1.0 Unit 주문**을 집행하여, 초입 물리거나 뇌동매매되는 현상을 구조적으로 방지합니다.
+   * **상대 전략 실제 매수(`BUY_UNIT`) 체결 시 미완성 더미 리셋:**
+     * 어느 한쪽 전략이 실제 매수를 체결하면, 반대편 전략의 미완성 더미(`executed_units == 0 and dummy_count > 0`)를 즉시 **`0 / 2`로 초기화**하여 유령 더미를 제거합니다.
+     * 단, 익절 청산(`SELL_CLEAR`) 시에는 반대편 더미를 초기화하지 않고 유지하며, 매수 체결 이후 발생한 신호는 정상 더미로 누적합니다.
 
 4. **매도 우선 원칙:**
    * 당일 매도(청산)와 매수 신호가 동시 발생할 경우 **매도를 우선 실행**합니다.
@@ -382,4 +390,36 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 - **검증 결과**:
   - `python -m py_compile config.py utils/formatters.py utils/__init__.py manager/trader.py main.py` 전 파일 구문 컴파일 오류 0건 통과
   - 0단계 초기 상태부터 12단계 풀매수 완료까지 단계별 인디케이터 문자열 생성 및 정렬 정상 동작 검증 완료
+
+## [2026-10-11 12:10] 업데이트 이력 (Commit ID: a76c82c)
+- **수정 내용**: 
+  - **양방향 헤지 동적 자금 관리 (Free Margin 1/10 & Total Balance 1/10) 구현**:
+    - 상대편 포지션 보유 중(`opposite_qty > 0`, 양방향 헤지 상태): 남은 **가용 잔고(Free Margin)의 1/10**을 기본 유닛으로 계산하여 가용 잔고 안에서 안정적인 10차수 DCA 분할 매수 지속
+    - 상대편 포지션 미보유(`opposite_qty == 0`, 단일 포지션 상태): **총 평가 잔고(Total Balance)의 1/10**을 기본 유닛으로 계산
+    - 한쪽 포지션 익절 청산 완료 시 잔여 포지션의 후속 차수는 단일 포지션 기준으로 자동 복귀되어 **마틴게일식 대형 유닛이 투입되는 평단가 희석 효과** 달성
+    - `config.py`: Bitget 선물 최소 주문 한도(`MIN_ORDER_USD = 5.0`) 상수 추가
+    - `api/bitget_client.py`: `fetch_account_balance()` 메서드 구현 (총 평가 잔고 및 실시간 가용 잔고 동시 반환, 모의 매매 시 실감형 가용 잔고 산출)
+    - `manager/trader.py`:
+      * 롱/숏 실전 매수 진입부에서 상대편 포지션 보유 여부 검사 및 `unit_base_usd` 동적 분기
+      * 주문 금액이 5 USDT 미만일 경우 `Insufficient Margin` 방지 및 안전 스킵(`MIN_ORDER_USD` 가드)
+    - `main.py`: 일봉 마감 텔레그램 보고서에 실시간 가용 잔고 및 단일/헤지 기준 1.0 Unit 기본 금액 동시 표기
+  - **상대 전략 실제 매수(`BUY_UNIT`) 체결 시 미완성 더미 0/2 즉시 초기화 메커니즘 구축**:
+    - 과거 단발성 노이즈로 누적된 유령 더미(Ghost Dummy)가 추세 반전 시 방어벽을 조기 소진하는 결함 원천 차단
+    - 어느 한쪽 전략이 실제 매수를 체결하면, 반대편 전략의 미완성 더미(`executed_units == 0 and dummy_count > 0`)를 즉시 **`0 / 2`로 리셋**하여 시장 국면 전환 반영
+    - 익절 청산(`SELL_CLEAR`) 시에는 반대편 더미를 유지하며, 상대 매수 체결 이후 발생한 신호는 정상 더미로 누적
+    - `manager/cycle_manager.py`: `reset_incomplete_dummy()` 메서드 구현 및 상태 파일(`state.json`) 원자적 저장
+    - `manager/trader.py`: 실전 매수 체결 직후 상대 전략 미완성 더미 초기화 호출 및 텔레그램 로그/엑셀 이력 기록 연동
+    - `utils/excel_logger.py`: `RESET_DUMMY` 이벤트 스타일(연노랑 배경) 추가
+  - **문서 체계 정비**:
+    - `docs/` 디렉터리에 작성 일시(KST)가 포함된 타임스탬프 형식으로 계획서 이관:
+      * `docs/20261007_1846_pnl_chart_implementation_plan.md`
+      * `docs/20261010_1402_indicator_implementation_plan.md`
+      * `docs/20261011_1154_dynamic_unit_implementation_plan.md`
+    - 빈 `docs/implementation/` 디렉터리 정리 및 `/apply`, `/ask` 스킬 참조 경로 최신화
+    - `docs/prd/bitget_v3_switch_prd.md` & `README.md`: 섹션 2 자금 관리 및 더미 메커니즘 수식/명세 갱신
+- **검증 결과**:
+  - `python -m py_compile config.py api/bitget_client.py manager/cycle_manager.py manager/trader.py utils/excel_logger.py main.py` 구문 컴파일 오류 0건 통과
+  - `unittest` 기반 잔고 산출 및 미완성 더미 리셋(`executed_units == 0` 대상만 정확히 초기화) 단위 검증 완료
+  - `python main.py --run-once` 일봉 마감 파이프라인 단일 실행 테스트: 실시간 잔고 조회, 단일/헤지 1.0 Unit 산출, 텔레그램 메시지 발송, 엑셀 갱신 전 과정 정상 동작 검증 완료
+
 

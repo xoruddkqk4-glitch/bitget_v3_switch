@@ -116,11 +116,13 @@ def run_pipeline() -> bool:
 
         # 잔고 및 1.0 Unit 기본 금액 산출
         total_balance = getattr(trader, 'last_total_balance', 0.0)
+        free_margin = getattr(trader, 'last_free_margin', 0.0)
         if total_balance <= 0.0:
-            total_balance = bitget_client.fetch_total_balance()
+            total_balance, free_margin = bitget_client.fetch_account_balance()
         unit_base_usd = getattr(trader, 'last_unit_base_usd', 0.0)
         if unit_base_usd <= 0.0:
             unit_base_usd = total_balance / UNIT_DIVISOR
+        hedge_unit_usd = free_margin / UNIT_DIVISOR
 
         # 한국 서울 기준 시간 (KST)
         kst_now = datetime.now(KST)
@@ -174,8 +176,8 @@ def run_pipeline() -> bool:
             f"<b>📊 [Bitget V3 Switch 일봉 1차 마감 보고]</b>\n\n"
             f"• <b>기준 일시:</b> {kst_str}\n"
             f"• <b>종목:</b> {SYMBOL}\n"
-            f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f}\n"
-            f"• <b>1.0 Unit 기본 금액:</b> ${unit_base_usd:,.2f}\n"
+            f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
+            f"• <b>1.0 Unit 기본 금액:</b> 단일 ${unit_base_usd:,.2f} / 헤지 ${hedge_unit_usd:,.2f}\n"
             f"• <b>일봉 기준일:</b> {candle_date_display} (전일 마감 완성봉)\n"
             f"• <b>실시간 현재가:</b> ${current_price:,.2f} (기준봉 종가: ${indicators.get('eval_close', current_price):,.2f}, "
             f"캔들: {indicators['candle_change']*100:+.2f}%, 전일비: {indicators['daily_change']*100:+.2f}%)\n"

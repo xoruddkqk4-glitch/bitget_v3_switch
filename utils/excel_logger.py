@@ -175,6 +175,7 @@ class ExcelLogger:
                 "BUY_UNIT": PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"),   # 연초록
                 "SELL_CLEAR": PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"), # 연주황
                 "BUY_DUMMY": PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid"),  # 연회색
+                "RESET_DUMMY": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"), # 연노랑 (리셋)
             }
             fill_style = event_fills.get(event_type, None)
 

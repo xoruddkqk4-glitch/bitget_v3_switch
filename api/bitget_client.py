@@ -6,6 +6,8 @@ Hedge Mode 강제, 1X 레버리지, 교차마진 설정 및 주문/잔고/OHLCV 
 
 from typing import Dict, Any, Optional, Tuple
 from datetime import timezone, timedelta
+from pathlib import Path
+import json
 import ccxt
 import pandas as pd
 
@@ -97,26 +99,57 @@ class BitgetClient:
             logger.error(f"[BitgetClient] OHLCV 수집 실패 ({target_symbol}): {e}")
             raise
 
-    def fetch_total_balance(self) -> float:
+    def fetch_account_balance(self) -> Tuple[float, float]:
         """
-        계좌 총 평가 잔고(Free Margin + Position Margin)를 산출합니다.
-        모의 모드일 경우 MOCK_BALANCE 또는 가상 잔고를 반환합니다.
+        계좌의 (총 평가 잔고, 실시간 가용 잔고)를 산출하여 반환합니다.
+        - total_equity: Free Margin + Position Margin + Unrealized PnL
+        - free_margin: 주문 집행에 즉시 투입 가능한 여유 증거금
+        모의 모드일 경우 MOCK_BALANCE 및 사용 증거금 차감액을 반환합니다.
+        Returns:
+            Tuple[float, float]: (total_balance, free_margin)
         """
         if self.paper_trading or not BITGET_API_KEY:
-            return MOCK_BALANCE
+            # 모의 모드: state.json 내 보유 수량/평단가를 바탕으로 가용 잔고 시뮬레이션
+            state_file = Path(__file__).resolve().parent.parent / "state.json"
+            used_margin = 0.0
+            if state_file.exists():
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        st = json.load(f)
+                    used_a = float(st.get("strategy_A", {}).get("total_qty", 0.0)) * float(st.get("strategy_A", {}).get("avg_price", 0.0))
+                    used_b = float(st.get("strategy_B", {}).get("total_qty", 0.0)) * float(st.get("strategy_B", {}).get("avg_price", 0.0))
+                    used_margin = used_a + used_b
+                except Exception:
+                    used_margin = 0.0
+            mock_free = max(0.0, MOCK_BALANCE - used_margin)
+            return MOCK_BALANCE, mock_free
 
         try:
             balance = self.exchange.fetch_balance({'type': 'swap'})
             usdt_info = balance.get('USDT', {})
             total_equity = float(usdt_info.get('total', 0.0))
             if total_equity <= 0:
-                # 대체 필드 확인
                 total_equity = float(balance.get('total', {}).get('USDT', 0.0))
-            logger.info(f"[BitgetClient] 실시간 총 평가 잔고 조회 완료: ${total_equity:,.2f}")
-            return total_equity if total_equity > 0 else MOCK_BALANCE
+            free_margin = float(usdt_info.get('free', 0.0))
+            if free_margin <= 0:
+                free_margin = float(balance.get('free', {}).get('USDT', 0.0))
+
+            final_total = total_equity if total_equity > 0 else MOCK_BALANCE
+            final_free = free_margin if free_margin > 0 else final_total
+
+            logger.info(f"[BitgetClient] 실시간 잔고 조회 완료: 총 평가 ${final_total:,.2f} | 가용 ${final_free:,.2f}")
+            return final_total, final_free
         except Exception as e:
             logger.error(f"[BitgetClient] 잔고 조회 실패, 모의 기본 잔고(${MOCK_BALANCE:,.2f})로 대체합니다: {e}")
-            return MOCK_BALANCE
+            return MOCK_BALANCE, MOCK_BALANCE
+
+    def fetch_total_balance(self) -> float:
+        """
+        계좌 총 평가 잔고(Free Margin + Position Margin)를 반환합니다.
+        하위 호환성을 위해 유지됩니다.
+        """
+        total, _ = self.fetch_account_balance()
+        return total
 
     def fetch_open_positions(self, symbol: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
