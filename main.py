@@ -1,7 +1,7 @@
 """
 main.py
 bitget_v3_switch 2단계 스마트 트레일링 자동매매 시스템 메인 엔트리 포인트
-- 일봉 1차 평가: 매일 09:10 ~ 09:15 KST 사이 1회 실행
+- 일봉 마감 평가: 매일 09:10 ~ 09:15 KST 사이 1회 실행
 - 4시간봉 2단계 트레일링 감시: 5분 주기(Crontab 또는 백그라운드 루프) 실행
 """
 
@@ -58,7 +58,7 @@ def generate_mock_ohlcv(limit: int = 100, timeframe: str = '1d') -> pd.DataFrame
 
 
 def is_daily_evaluation_window() -> bool:
-    """현재 한국 시각(KST)이 일봉 1차 평가 시간대(09:10 ~ 09:15)인지 검사합니다."""
+    """현재 한국 시각(KST)이 일봉 마감 평가 시간대(09:10 ~ 09:15)인지 검사합니다."""
     kst_now = datetime.now(timezone(timedelta(hours=9)))
     return (
         kst_now.hour == DAILY_EVAL_HOUR_KST and
@@ -77,7 +77,7 @@ def run_pipeline() -> bool:
     """
     start_time = datetime.now()
     logger.info("=" * 70)
-    logger.info(f"[Pipeline] 일봉 마감 1차 실행 파이프라인 시작 ({start_time.strftime('%Y-%m-%d %H:%M:%S')})")
+    logger.info(f"[Pipeline] 일봉 마감 실행 파이프라인 시작 ({start_time.strftime('%Y-%m-%d %H:%M:%S')})")
     logger.info("=" * 70)
 
     try:
@@ -172,8 +172,18 @@ def run_pipeline() -> bool:
             executed_units=updated_state_b.get('executed_units', 0)
         )
 
+        def escape_tg(text: str) -> str:
+            """텔레그램 HTML 파싱 오류 방지를 위한 특수문자 이스케이프"""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # 당일 전략별 매수/미매수 판정 사유 로드
+        eval_a = getattr(trader, 'last_eval_a', {})
+        eval_b = getattr(trader, 'last_eval_b', {})
+        desc_a = escape_tg(eval_a.get('summary', '조건 판정 정보 없음'))
+        desc_b = escape_tg(eval_b.get('summary', '조건 판정 정보 없음'))
+
         summary_msg = (
-            f"<b>📊 [Bitget V3 Switch 일봉 1차 마감 보고]</b>\n\n"
+            f"<b>📊 [Bitget V3 Switch 일봉 마감 보고]</b>\n\n"
             f"• <b>기준 일시:</b> {kst_str}\n"
             f"• <b>종목:</b> {SYMBOL}\n"
             f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
@@ -194,11 +204,13 @@ def run_pipeline() -> bool:
             f"• 평단가: ${avg_b:,.2f} | <b>평가손익:</b> {pnl_str_b}\n"
             f"• <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n\n"
             f"<b>[금일 집행 내역]</b>\n"
+            f"• <b>전략 A (롱):</b> {desc_a}\n"
+            f"• <b>전략 B (숏):</b> {desc_b}\n"
         )
         if logs:
-            summary_msg += "\n".join(f"• {log}" for log in logs)
+            summary_msg += "\n".join(f"• {escape_tg(log)}" for log in logs)
         else:
-            summary_msg += "• 금일 진입/청산 조건 없음 (포지션 유지 또는 관망)"
+            summary_msg += "• (금일 실제 주문 집행 없음)"
 
         notifier.send_message(summary_msg)
         try:
@@ -248,7 +260,7 @@ def run_stage2_pipeline() -> bool:
 def run_cron_tick() -> bool:
     """
     Crontab 5분 주기 통합 틱 핸들러 (*/5 * * * *)
-    - 09:10 ~ 09:15 KST: 하루 1회 일봉 1차 마감 평가 및 매수 진입 실행
+    - 09:10 ~ 09:15 KST: 하루 1회 일봉 마감 평가 및 매수 진입 실행
     - 그 외 시간대:
       - 2단계 트레일링 활성 중일 때: 4시간봉 2단계 매도 감시
       - 2단계 트레일링 비활성 시: 0.1초 즉시 종료 (부하 0%)
@@ -257,7 +269,7 @@ def run_cron_tick() -> bool:
     logger.info(f"[CronTick] 5분 주기 감시 틱 실행 (KST {kst_now.strftime('%Y-%m-%d %H:%M:%S')})")
 
     if is_daily_evaluation_window():
-        logger.info("[CronTick] 일봉 1차 평가 시간대(09:10~09:15 KST) 충족 -> 일봉 마감 파이프라인 실행")
+        logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:15 KST) 충족 -> 일봉 마감 파이프라인 실행")
         return run_pipeline()
 
     if cycle_manager.is_any_trailing_active():

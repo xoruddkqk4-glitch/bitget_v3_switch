@@ -40,13 +40,13 @@ class StrategyBShort(BaseStrategy):
         is_daily_pump = daily_change >= SHORT_DAILY_PUMP_PCT
 
         if is_bullish and is_daily_pump:
-            return True, f"양봉 상승({candle_change*100:+.2f}%) 및 전일 대비 급등({daily_change*100:+.2f}%) 동시 발생"
+            return True, f"양봉 상승({candle_change*100:+.2f}% >= {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%) 및 전일비 급등({daily_change*100:+.2f}% >= {SHORT_DAILY_PUMP_PCT*100:+.1f}%) 동시 충족"
         elif is_bullish:
-            return True, f"양봉 상승 발생({candle_change*100:+.2f}% >= {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%)"
+            return True, f"양봉 상승 충족({candle_change*100:+.2f}% >= {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%, 전일비: {daily_change*100:+.2f}%)"
         elif is_daily_pump:
-            return True, f"전일 대비 급등 발생({daily_change*100:+.2f}% >= {SHORT_DAILY_PUMP_PCT*100:+.1f}%)"
+            return True, f"전일비 급등 충족({daily_change*100:+.2f}% >= {SHORT_DAILY_PUMP_PCT*100:+.1f}%, 캔들: {candle_change*100:+.2f}%)"
 
-        return False, "진입 조건 미충족"
+        return False, f"양봉 상승 미달({candle_change*100:+.2f}% < {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%) & 전일비 급등 미달({daily_change*100:+.2f}% < {SHORT_DAILY_PUMP_PCT*100:+.1f}%)"
 
     def check_stage1_exit_signal(
         self,

@@ -40,6 +40,8 @@ class Trader:
         self.last_total_balance: float = 0.0
         self.last_free_margin: float = 0.0
         self.last_unit_base_usd: float = 0.0
+        self.last_eval_a: Dict[str, Any] = {}
+        self.last_eval_b: Dict[str, Any] = {}
 
     def process_daily_cycle(self, indicators: Dict[str, Any]) -> List[str]:
         """
@@ -52,6 +54,8 @@ class Trader:
         date_str = indicators.get('candle_date', '')
         current_price = indicators['current_price']
         execution_logs: List[str] = []
+        self.last_eval_a = {}
+        self.last_eval_b = {}
 
         # 1. 총 평가 잔고, 실시간 가용 잔고 및 1 Unit 기준금액 산출
         total_balance, free_margin = self.client.fetch_account_balance()
@@ -193,7 +197,14 @@ class Trader:
 
         # 4-1. A 전략 (Long) 진입 평가
         if state_a.get("trailing_mode", False):
-            logger.info("[Trader] [Strategy A] 2단계 트레일링 감시 진행 중이므로 신규 롱 진입 스킵")
+            reason_a = "2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+            logger.info(f"[Trader] [Strategy A] {reason_a}")
+            self.last_eval_a = {
+                "signal_met": False,
+                "status": "TRAILING_ACTIVE",
+                "reason": reason_a,
+                "summary": "🟡 2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+            }
         else:
             entry_a_met, entry_a_reason = self.strategy_a.check_entry_signal(
                 current_candle=indicators,
@@ -217,6 +228,12 @@ class Trader:
                     )
                     bar_a1 = format_progress_single_track(1, 0, include_counts=False)
                     execution_logs.append(f"🟡 [롱 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 소진: {bar_a1}")
+                    self.last_eval_a = {
+                        "signal_met": True,
+                        "status": "DUMMY_TRANSFERRED",
+                        "reason": entry_a_reason,
+                        "summary": f"🟡 1차 더미 이관 ({entry_a_reason})"
+                    }
                 else:
                     action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_A")
                     if action_type == "DUMMY":
@@ -234,6 +251,12 @@ class Trader:
                         )
                         bar_ad = format_progress_single_track(dummy_count, 0, include_counts=False)
                         execution_logs.append(f"⚪ [롱 더미 소진] {unit_label} 완료: {bar_ad} (더미 {dummy_count}/2)")
+                        self.last_eval_a = {
+                            "signal_met": True,
+                            "status": "DUMMY_CONSUMED",
+                            "reason": entry_a_reason,
+                            "summary": f"⚪ {unit_label} 소진 ({entry_a_reason})"
+                        }
                     else:
                         # 상대편(숏) 포지션 보유 여부 확인 (Hedge 모드 양방향 상태)
                         curr_state_b = self.cycles.get_strategy_state("strategy_B")
@@ -252,6 +275,12 @@ class Trader:
                             msg = f"⚠️ [롱 주문 스킵] {unit_label}: 주문금액(${target_usd:,.2f})이 최소 한도(${MIN_ORDER_USD:,.2f}) 미만입니다. ({basis_label} 기준)"
                             logger.warning(f"[Trader] {msg}")
                             execution_logs.append(msg)
+                            self.last_eval_a = {
+                                "signal_met": True,
+                                "status": "SKIPPED_MIN_ORDER",
+                                "reason": f"{entry_a_reason} (주문금액 ${target_usd:,.2f} < 최소한도 ${MIN_ORDER_USD:,.2f})",
+                                "summary": f"⚠️ 주문 스킵 (주문금액 ${target_usd:,.1f} < ${MIN_ORDER_USD:,.1f})"
+                            }
                         else:
                             # 실전 매수 집행
                             target_qty = target_usd / current_price if current_price > 0 else 0.0
@@ -284,6 +313,12 @@ class Trader:
                                 f"🟢 [롱 실전 매수] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty "
                                 f"(${target_usd:,.1f}) [{basis_label}] | {bar_ar} ({executed_a}/10)"
                             )
+                            self.last_eval_a = {
+                                "signal_met": True,
+                                "status": "BUY_EXECUTED",
+                                "reason": entry_a_reason,
+                                "summary": f"🟢 {unit_label} 매수 체결 ({entry_a_reason})"
+                            }
 
                             # 체결 직후: 상대 전략(B 숏)의 미완성 더미 초기화 트리거
                             if self.cycles.reset_incomplete_dummy("strategy_B", trigger_source="strategy_A", date_str=date_str):
@@ -301,11 +336,24 @@ class Trader:
                                     note="롱 실전 매수 체결에 따른 숏 미완성 더미 0/2 초기화"
                                 )
             else:
-                logger.info("[Trader] [Strategy A] 롱 진입 신호 없음")
+                logger.info(f"[Trader] [Strategy A] 롱 진입 신호 없음: {entry_a_reason}")
+                self.last_eval_a = {
+                    "signal_met": False,
+                    "status": "NO_SIGNAL",
+                    "reason": entry_a_reason,
+                    "summary": f"⚪ 조건 미충족 ({entry_a_reason})"
+                }
 
         # 4-2. B 전략 (Short) 진입 평가
         if state_b.get("trailing_mode", False):
-            logger.info("[Trader] [Strategy B] 2단계 트레일링 감시 진행 중이므로 신규 숏 진입 스킵")
+            reason_b = "2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+            logger.info(f"[Trader] [Strategy B] {reason_b}")
+            self.last_eval_b = {
+                "signal_met": False,
+                "status": "TRAILING_ACTIVE",
+                "reason": reason_b,
+                "summary": "🟡 2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+            }
         else:
             entry_b_met, entry_b_reason = self.strategy_b.check_entry_signal(
                 current_candle=indicators,
@@ -329,6 +377,12 @@ class Trader:
                     )
                     bar_b1 = format_progress_single_track(1, 0, include_counts=False)
                     execution_logs.append(f"🟡 [숏 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 소진: {bar_b1}")
+                    self.last_eval_b = {
+                        "signal_met": True,
+                        "status": "DUMMY_TRANSFERRED",
+                        "reason": entry_b_reason,
+                        "summary": f"🟡 1차 더미 이관 ({entry_b_reason})"
+                    }
                 else:
                     action_type, weight, unit_label = self.cycles.determine_buy_action("strategy_B")
                     if action_type == "DUMMY":
@@ -346,6 +400,12 @@ class Trader:
                         )
                         bar_bd = format_progress_single_track(dummy_count, 0, include_counts=False)
                         execution_logs.append(f"⚪ [숏 더미 소진] {unit_label} 완료: {bar_bd} (더미 {dummy_count}/2)")
+                        self.last_eval_b = {
+                            "signal_met": True,
+                            "status": "DUMMY_CONSUMED",
+                            "reason": entry_b_reason,
+                            "summary": f"⚪ {unit_label} 소진 ({entry_b_reason})"
+                        }
                     else:
                         # 상대편(롱) 포지션 보유 여부 확인 (Hedge 모드 양방향 상태)
                         curr_state_a = self.cycles.get_strategy_state("strategy_A")
@@ -364,6 +424,12 @@ class Trader:
                             msg = f"⚠️ [숏 주문 스킵] {unit_label}: 주문금액(${target_usd:,.2f})이 최소 한도(${MIN_ORDER_USD:,.2f}) 미만입니다. ({basis_label} 기준)"
                             logger.warning(f"[Trader] {msg}")
                             execution_logs.append(msg)
+                            self.last_eval_b = {
+                                "signal_met": True,
+                                "status": "SKIPPED_MIN_ORDER",
+                                "reason": f"{entry_b_reason} (주문금액 ${target_usd:,.2f} < 최소한도 ${MIN_ORDER_USD:,.2f})",
+                                "summary": f"⚠️ 주문 스킵 (주문금액 ${target_usd:,.1f} < ${MIN_ORDER_USD:,.1f})"
+                            }
                         else:
                             # 실전 숏 매도 집행
                             target_qty = target_usd / current_price if current_price > 0 else 0.0
@@ -396,6 +462,12 @@ class Trader:
                                 f"🔴 [숏 실전 진입] {unit_label}: ${current_price:,.2f}에 {target_qty:,.4f} Qty "
                                 f"(${target_usd:,.1f}) [{basis_label}] | {bar_br} ({executed_b}/10)"
                             )
+                            self.last_eval_b = {
+                                "signal_met": True,
+                                "status": "BUY_EXECUTED",
+                                "reason": entry_b_reason,
+                                "summary": f"🔴 {unit_label} 숏 진입 체결 ({entry_b_reason})"
+                            }
 
                             # 체결 직후: 상대 전략(A 롱)의 미완성 더미 초기화 트리거
                             if self.cycles.reset_incomplete_dummy("strategy_A", trigger_source="strategy_B", date_str=date_str):
@@ -413,7 +485,13 @@ class Trader:
                                     note="숏 실전 매수 체결에 따른 롱 미완성 더미 0/2 초기화"
                                 )
             else:
-                logger.info("[Trader] [Strategy B] 숏 진입 신호 없음")
+                logger.info(f"[Trader] [Strategy B] 숏 진입 신호 없음: {entry_b_reason}")
+                self.last_eval_b = {
+                    "signal_met": False,
+                    "status": "NO_SIGNAL",
+                    "reason": entry_b_reason,
+                    "summary": f"⚪ 조건 미충족 ({entry_b_reason})"
+                }
 
         return execution_logs
 

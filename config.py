@@ -41,9 +41,9 @@ MARGIN_MODE = "cross"          # 교차 마진 (Cross Margin)
 POSITION_MODE = "hedge"        # 헤지 모드 (Long/Short 동시 독립 보유)
 
 # 2단계 트레일링 매도 및 스케줄링 설정
-DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 1차 평가 시간(KST)
-DAILY_EVAL_START_MIN = 10      # 일봉 1차 평가 시작 분 (09:10 KST)
-DAILY_EVAL_END_MIN = 15        # 일봉 1차 평가 종료 분 (09:15 KST)
+DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 마감 평가 시간(KST)
+DAILY_EVAL_START_MIN = 10      # 일봉 마감 평가 시작 분 (09:10 KST)
+DAILY_EVAL_END_MIN = 15        # 일봉 마감 평가 종료 분 (09:15 KST)
 PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
 
 

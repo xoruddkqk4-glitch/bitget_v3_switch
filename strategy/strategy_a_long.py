@@ -40,13 +40,13 @@ class StrategyALong(BaseStrategy):
         is_daily_drop = daily_change <= LONG_DAILY_DROP_PCT
 
         if is_bearish and is_daily_drop:
-            return True, f"음봉 하락({candle_change*100:.2f}%) 및 전일 대비 급락({daily_change*100:.2f}%) 동시 발생"
+            return True, f"음봉 하락({candle_change*100:+.2f}% <= {LONG_BEARISH_CANDLE_PCT*100:.1f}%) 및 전일비 급락({daily_change*100:+.2f}% <= {LONG_DAILY_DROP_PCT*100:.1f}%) 동시 충족"
         elif is_bearish:
-            return True, f"음봉 하락 발생({candle_change*100:.2f}% <= {LONG_BEARISH_CANDLE_PCT*100:.1f}%)"
+            return True, f"음봉 하락 충족({candle_change*100:+.2f}% <= {LONG_BEARISH_CANDLE_PCT*100:.1f}%, 전일비: {daily_change*100:+.2f}%)"
         elif is_daily_drop:
-            return True, f"전일 대비 급락 발생({daily_change*100:.2f}% <= {LONG_DAILY_DROP_PCT*100:.1f}%)"
+            return True, f"전일비 급락 충족({daily_change*100:+.2f}% <= {LONG_DAILY_DROP_PCT*100:.1f}%, 캔들: {candle_change*100:+.2f}%)"
 
-        return False, "진입 조건 미충족"
+        return False, f"음봉 하락 미달({candle_change*100:+.2f}% > {LONG_BEARISH_CANDLE_PCT*100:.1f}%) & 전일비 급락 미달({daily_change*100:+.2f}% > {LONG_DAILY_DROP_PCT*100:.1f}%)"
 
     def check_stage1_exit_signal(
         self,

@@ -422,4 +422,22 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `unittest` 기반 잔고 산출 및 미완성 더미 리셋(`executed_units == 0` 대상만 정확히 초기화) 단위 검증 완료
   - `python main.py --run-once` 일봉 마감 파이프라인 단일 실행 테스트: 실시간 잔고 조회, 단일/헤지 1.0 Unit 산출, 텔레그램 메시지 발송, 엑셀 갱신 전 과정 정상 동작 검증 완료
 
+## [2026-10-11 12:28] 업데이트 이력 (Commit ID: 61986df)
+- **수정 내용**: 
+  - **텔레그램 일봉 마감 보고서 명칭 정비 ('1차' 삭제)**:
+    - 텔레그램 일일 보고서 헤더 명칭을 `📊 [Bitget V3 Switch 일봉 1차 마감 보고]`에서 `📊 [Bitget V3 Switch 일봉 마감 보고]`로 변경하여 직관성 및 명확성 제고
+    - `main.py` 및 `config.py`의 '일봉 1차 평가/실행' 관련 주석 및 로그 표기를 '일봉 마감 평가/실행'으로 일관되게 정돈
+  - **전략별 매수/미매수 판정 사유 상세화 및 집행 내역 블록 집중 표기**:
+    - `strategy/strategy_a_long.py` & `strategy/strategy_b_short.py`: `check_entry_signal()`에서 단순 미충족 문구 대신 실제 일봉 등락률과 기준 임계값을 비교한 구체적 수치 사유 반환 (예: `음봉 하락 미달(+0.59% > -1.5%) & 전일비 급락 미달(+0.59% > -3.0%)`, `양봉 상승 미달(+0.59% < +1.5%) & 전일비 급등 미달(+0.59% < +3.0%)`)
+    - `manager/trader.py`: 일봉 마감 싸이클 내 전략 A(롱) 및 전략 B(숏)의 판정 상태(조건 미충족, 트레일링 감시 스킵, 더미 소진/이관, 실전 매수 체결, 최소주문금액 미달) 및 상세 사유를 `last_eval_a`, `last_eval_b`에 보관
+    - `main.py`: 전략 A/B 블록의 중복 문구를 제거하여 포지션/수익률 현황에만 집중하고, `[금일 집행 내역]` 블록에 전략별 당일 매수/미매수 사유를 단일 집중 표기
+  - **텔레그램 HTML 엔티티 이스케이프 및 안전 전송 폴백 구축**:
+    - `main.py`: 부등호(`<`, `>`) 및 `&` 기호가 텔레그램 HTML 파서와 충돌하지 않도록 `escape_tg()`를 적용해 안전하게 렌더링
+    - `utils/notifier.py`: Telegram API에서 400 Bad Request(HTML 파싱 오류) 발생 시 태그를 자동 제거하고 일반 텍스트 모드로 즉시 재전송하는 Fallback 안전장치 추가
+- **검증 결과**:
+  - `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/trader.py main.py utils/notifier.py` 구문 컴파일 오류 0건 통과
+  - `python main.py --run-once` 실제 파이프라인 단일 실행을 통한 텔레그램 메시지 생성 및 전송 검증 완료 (`[Notifier] 텔레그램 메시지 전송 성공`)
+  - 전략별 매수 미달 사유 및 수치 비교값의 정상 출력 확인 완료
+
+
 
