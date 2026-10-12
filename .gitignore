@@ -44,5 +44,7 @@ Thumbs.db
 
 # Runtime Data & State
 state.json
+state.bak.json
+state.corrupt_*.json
 *.tmp
 *.xlsx

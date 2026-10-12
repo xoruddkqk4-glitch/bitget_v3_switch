@@ -45,12 +45,22 @@ DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 마감 평가 시간(KST)
 DAILY_EVAL_START_MIN = 10      # 일봉 마감 평가 시작 분 (09:10 KST)
 DAILY_EVAL_END_MIN = 15        # 일봉 마감 평가 종료 분 (09:15 KST)
 PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
+STAGE2_SIGNAL_MODE = "closed_candle"  # 2단계 4H 5MA 이탈 판정: "closed_candle"(마감된 4H 완성봉 종가, 권장) | "realtime"(진행 중 캔들 실시간가)
+
+TAKER_FEE_RATE = 0.0006
+ORDER_CONFIRM_RETRY_DELAYS = (0.5, 1.0, 2.0)
+PARTIAL_FILL_RATIO = 0.99
+RECONCILE_TOLERANCE_PCT = 0.01
+RECONCILE_AUTO_SYNC = True
+ALERT_COOLDOWN_SEC = 3600
 
 
 # ------------------------------------------------------------------------------
 # 3. 자금 관리 및 유닛 가중치 설정 (PRD 섹션 2)
 # ------------------------------------------------------------------------------
-UNIT_DIVISOR = 10.0            # 1.0 Unit = 기준 잔고 / 10
+UNIT_DIVISOR = 12.0            # 1.0 Unit = 기준 잔고 / 12 (1.0x×4 + 1.25x×6 = 11.5 Unit 소요 → 0.5 Unit 여유)
+MAX_EXECUTED_UNITS = 10        # 싸이클당 실제 매수 최대 회차 (UNIT_DIVISOR와 분리된 독립 상한)
+MARGIN_SAFETY_RATIO = 0.95     # 1회 주문금액 상한 = 가용 잔고 × 레버리지 × 0.95 (증거금 부족 주문 거절 방지)
 MIN_ORDER_USD = 5.0            # Bitget 선물 최소 주문 가능 금액 ($5.0)
 DUMMY_TARGET = 2               # 1~2회차 신호는 더미(0원) 소진 처리
 WEIGHTED_UNIT_THRESHOLD = 4    # 실제 매수 1~4회차(executed_units 0~3): 1.0x, 5회차 이상: 1.25x
@@ -70,7 +80,9 @@ DRAWDOWN_THRESHOLD = -0.30             # 낙폭률 임계치 -30%
 
 # A 전략 청산 계수 (SMA5 배수)
 LONG_EXIT_RISING_SMA = 1.02            # 60일선 상승 시 Target = SMA5 * 1.02 이상
-LONG_EXIT_FALLING_SMA_MILD = 0.99      # 60일선 하락 & 낙폭 > -30% Target = SMA5 * 0.99 이하 (본전탈출)
+LONG_EXIT_FALLING_SMA_MILD = 0.99      # 60일선 하락 & 낙폭 > -30% Target = SMA5 * 0.99 이상 회복 시 즉시 청산 (본전탈출)
+BREAKEVEN_GUARD_ENABLED = False        # (선택) 본전탈출 시 현재가 >= 평단 × (1 + BREAKEVEN_GUARD_MIN_PCT) 일 때만 청산
+BREAKEVEN_GUARD_MIN_PCT = 0.002        # 본전 가드 최소 수익률 (0.2% ≈ 왕복 수수료)
 LONG_EXIT_FALLING_SMA_DEEP = 1.03      # 60일선 하락 & 낙폭 <= -30% Target = SMA5 * 1.03 이상 (반등익절)
 
 # ------------------------------------------------------------------------------
@@ -92,3 +104,22 @@ STATE_FILE = BASE_DIR / "state.json"
 EXCEL_FILE = BASE_DIR / "trade_history.xlsx"
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "trading.log"
+ALERT_THROTTLE_FILE = LOG_DIR / "alert_throttle.json"
+
+
+# ------------------------------------------------------------------------------
+# 7. 실전 모드 설정 검증
+# ------------------------------------------------------------------------------
+def validate_live_config() -> list:
+    """
+    실전 모드(PAPER_TRADING=False)에서 필수 API 설정 누락 항목 이름 리스트를 반환합니다.
+    빈 리스트면 정상입니다. 모의 모드에서는 항상 빈 리스트를 반환합니다.
+    """
+    if PAPER_TRADING:
+        return []
+    required = (
+        ("BITGET_API_KEY", BITGET_API_KEY),
+        ("BITGET_SECRET", BITGET_SECRET),
+        ("BITGET_PASSPHRASE", BITGET_PASSPHRASE),
+    )
+    return [name for name, value in required if not str(value or "").strip()]

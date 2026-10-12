@@ -176,6 +176,10 @@ class ExcelLogger:
                 "SELL_CLEAR": PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"), # 연주황
                 "BUY_DUMMY": PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid"),  # 연회색
                 "RESET_DUMMY": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"), # 연노랑 (리셋)
+                "SELL_CLEAR_PARTIAL": PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid"),
+                "SYNC_RESET": PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid"),
+                "SYNC_ADOPT": PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid"),
+                "TRAIL_RATCHET": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
             }
             fill_style = event_fills.get(event_type, None)
 

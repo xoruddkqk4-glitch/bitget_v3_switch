@@ -62,11 +62,12 @@
 2. **2단계 스마트 트레일링 청산 규칙:**
    * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
      * **60일선 상승 중:** Target = $SMA_5 \times 1.02$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
-     * **60일선 하락 & 완만한 하락 ($\text{낙폭률} > -30\%$):** Target = $SMA_5 \times 0.99$ 이하 다다를 때 $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절)**
+     * **60일선 하락 & 완만한 하락 ($\text{낙폭률} > -30\%$):** 현재가가 Target = $SMA_5 \times 0.99$ 이상으로 회복할 때 $\rightarrow$ **즉시 시장가 전량 청산 (반등 시 빠른 본탈)**
      * **60일선 하락 & 과낙폭 ($\text{낙폭률} \le -30\%$):** Target = $SMA_5 \times 1.03$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (과낙폭 반등 추세 감시)
    * **2단계 5분 주기 감시 (Crontab `*/5 * * * *`):**
-     * **추세 꺾임:** 현재가 $<$ 4시간봉 $5MA$ 하향 이탈 **OR**
-     * **이익 방어:** 현재가 $\le$ 최소 이익 보존선 하회 시 $\rightarrow$ **롱 전량 익절 청산!**
+     * **추세 꺾임:** 트레일링 돌입 이후 마감된 **4시간봉 완성봉 종가** $<$ 완성봉 $5MA$ **OR**
+     * **이익 방어:** 실시간 현재가 $\le$ 최소 이익 보존선 하회 시 $\rightarrow$ **롱 전량 익절 청산!**
+     * **보존선 래칫:** 감시 중 일봉 재평가 목표가가 더 높으면 보존선을 상향 (하향 없음)
 
 ---
 
@@ -76,12 +77,13 @@
    * 전일 대비 등락률 $\ge +3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \ge +0.030$)
 2. **2단계 스마트 트레일링 청산 규칙 (대칭 구조):**
    * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
-     * **60일선 상승 중 (단기 눌림):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
-     * **60일선 하락 & 완만한 반등 ($\text{반등폭} < +30\%$):** Target = $SMA_5 \times 1.01$ 이하 다다를 때 $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절)**
-     * **60일선 하락 & 과반등 후 깊은 눌림 ($\text{반등폭} \ge +30\%$):** Target = $SMA_5 \times 0.97$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (눌림 추세 감시)
+   * **60일선 상승 중 (단기 눌림):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
+   * **60일선 하락 & 완만한 반등 ($\text{반등폭} < +30\%$):** Target = $SMA_5 \times 1.01$ 이하 다다를 때 $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절)**
+   * **60일선 하락 & 과반등 후 깊은 눌림 ($\text{반등폭} \ge +30\%$):** Target = $SMA_5 \times 0.97$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (눌림 추세 감시)
    * **2단계 5분 주기 감시 (Crontab `*/5 * * * *`):**
-     * **추세 반등:** 현재가 $>$ 4시간봉 $5MA$ 상향 돌파 **OR**
-     * **이익 방어:** 현재가 $\ge$ 최소 이익 보존 상한선 상회 시 $\rightarrow$ **숏 전량 익절 청산!**
+     * **추세 반등:** 트레일링 돌입 이후 마감된 **4시간봉 완성봉 종가** $>$ 완성봉 $5MA$ **OR**
+     * **이익 방어:** 실시간 현재가 $\ge$ 최소 이익 보존 상한선 상회 시 $\rightarrow$ **숏 전량 익절 청산!**
+     * **보존선 래칫:** 감시 중 일봉 재평가 목표가가 더 낮으면 보존선을 하향 (상향 없음)
 
 
 ---
@@ -438,6 +440,48 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/trader.py main.py utils/notifier.py` 구문 컴파일 오류 0건 통과
   - `python main.py --run-once` 실제 파이프라인 단일 실행을 통한 텔레그램 메시지 생성 및 전송 검증 완료 (`[Notifier] 텔레그램 메시지 전송 성공`)
   - 전략별 매수 미달 사유 및 수치 비교값의 정상 출력 확인 완료
+
+## [2026-10-12 21:05] 업데이트 이력 (Commit ID: ed5e504)
+- **수정 내용**: 
+  - **헤지모드 실주문 파라미터 적용 및 계정 검증 (`api/bitget_client.py`, `config.py`)**:
+    - `hedged=True` 및 청산 시 `reduceOnly=True` 설정으로 Bitget Hedge Mode 시장가 주문(롱 진입 buy/롱 청산 sell, 숏 진입 sell/숏 청산 buy) 체결 보장
+    - `_verify_account_mode()` 구현: `posMode='hedge_mode'`, `marginMode='cross'`, 레버리지 1x, 계약단위(`contractSize=1`)를 엄격 검증하여 거래소 환경 불일치 시 사전 차단
+  - **실전 모드 가짜 데이터/모의 잔고 매매 원천 차단 (`api/exceptions.py`, `utils/mock_data.py`, `config.py`)**:
+    - 실전 모드(`PAPER_TRADING=false`)에서 필수 API 설정 누락 검증(`validate_live_config()`) 실패 시 프로세스 즉시 종료 (Exit Code 2)
+    - 시세/잔고/포지션 조회 실패 시 모의 데이터나 가상 잔고로 임의 대체하는 폴백을 전면 제거하고 `DataUnavailableError` 발생으로 안전 중단
+  - **주문 → 체결 확인 → 상태/손익/엑셀 기록 순서 일원화 (`api/bitget_client.py`, `manager/trader.py`)**:
+    - 시장가 주문 발송 후 `_confirm_order()`로 실제 체결 여부 및 실체결가·수량·수수료를 확인한 `OrderResult` 반환
+    - 체결 확인된 수량과 금액에 대해서만 `state.json` 및 `trade_history.xlsx`에 반영하여 부분체결 및 미체결 시의 상태 왜곡 방지
+  - **거래소 실제 포지션 대조(Reconciliation) 및 매매 차단 시스템 구축 (`manager/reconciler.py`, `main.py`)**:
+    - 일봉 마감 및 2단계 트레일링 감시 시점에 거래소 실제 포지션과 `state.json`의 수량/평단을 자동 대조
+    - 불일치(`MISMATCH`) 발생 시 해당 전략만 매매를 차단하고 텔레그램 경보 발송
+    - `--reconcile` (대조 결과 출력) 및 `--adopt-exchange` (거래소 포지션 강제 채택 및 복구) CLI 명령어 지원
+  - **롱 "완만한 하락장 본전탈출" 조건 개선 (`strategy/strategy_a_long.py`)**:
+    - 기존 `<=`(하락 시 추가 청산)에서 `>=`(반등 시 본전 탈출)로 조건식 수정: `current_price >= target_price` (`SMA5 * 0.99` 이상으로 회복 시 즉시 전량 청산)
+  - **동적 자금 분할 1/12 적용 및 최대 10회차 상한/가용잔고 상한 (`config.py`, `utils/formatters.py`, `manager/cycle_manager.py`, `manager/trader.py`)**:
+    - `UNIT_DIVISOR = 12.0` 적용: 1~4회차(1.0x×4) + 5~10회차(1.25x×6) = 11.5 Unit 소요에 맞춰 0.5 Unit의 안전 버퍼 확보
+    - `MAX_EXECUTED_UNITS = 10` 상한 설정으로 최대 10회차 도달 시 추가 매수 중단(`SKIPPED_MAX_UNITS`)
+    - `MARGIN_SAFETY_RATIO = 0.95` 적용: 1회 주문금액이 `가용 잔고 × 레버리지 × 0.95`를 초과하지 않도록 자동 제한
+    - 단일 트랙 진행바 인디케이터가 10칸(`MAX_EXECUTED_UNITS`)으로 안정적으로 렌더링되도록 수정
+  - **2단계 트레일링 보존선 래칫(Ratchet) 메커니즘 구축 (`manager/cycle_manager.py`, `manager/trader.py`, `utils/excel_logger.py`)**:
+    - 트레일링 감시 중 일봉 재평가 시 유리한 방향으로만 보존선 갱신(롱: 상향, 숏: 하향). 불리한 가격이나 `IMMEDIATE_EXIT` 결과는 무시하고 포지션 유지
+    - 엑셀 기록 시 `TRAIL_RATCHET` 이벤트(연노랑 배경) 연동
+  - **4시간봉 2단계 판정 기준 개선 (`strategy/indicator.py`, `strategy/strategy_a_long.py`, `strategy/strategy_b_short.py`)**:
+    - `STAGE2_SIGNAL_MODE = "closed_candle"` 기본 적용: 5분마다 실시간가로 최소 보존선 이탈을 즉각 방어하면서, 4H 5MA 추세 이탈은 휩쏘(노이즈) 방지를 위해 마감된 4H 완성봉 종가 기준으로 판정
+    - 트레일링 돌입 이후 마감된 4H 봉만 이탈 판정에 인정하도록 타임스탬프 필터링 적용
+  - **상태 파일 원자적 저장 및 백업/보호 (`manager/cycle_manager.py`)**:
+    - `state.json` 저장 시 임시 파일(`state.tmp`) 작성 후 원자적 교체(`replace`)
+    - 저장 전 직전 정상본을 `state.bak.json`에 보관, 손상 발생 시 `state.corrupt_YYYYMMDD_HHMMSS.json`으로 백업하고 덮어쓰기 방지
+  - **문서 동기화 및 계획서 보관 (`docs/prd/bitget_v3_switch_prd.md`, `README.md`, `docs/`)**:
+    - PRD 및 README에 변경된 1/12 분할 수식, 완만한 하락 본탈 조건, 2단계 트레일링/래칫 규칙 최신화
+    - LLM 실행용 Phase 1 및 Phase 2 계획서 보관
+- **검증 결과**:
+  - `python -m py_compile` 전 파일 컴파일 에러 0건 통과
+  - 1/12 분할 계산 및 가용잔고 상한(`MARGIN_SAFETY_RATIO`) 주문 축소 검증 완료
+  - 최대 10회차 도달 시 `SKIPPED_MAX_UNITS` 매수 중단 검증 완료
+  - 트레일링 돌입 후 보존선 상향 래칫 및 일봉 즉시탈출 신호 무시 검증 완료
+  - 4H 진행 중 캔들 노이즈 방어 및 마감 완성봉 이탈 시 정상 청산 검증 완료
+
 
 
 

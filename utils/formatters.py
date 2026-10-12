@@ -4,14 +4,14 @@ utils/formatters.py
 """
 
 from typing import Optional
-from config import PROGRESS_FILLED_ICON, PROGRESS_EMPTY_ICON, DUMMY_TARGET, UNIT_DIVISOR
+from config import PROGRESS_FILLED_ICON, PROGRESS_EMPTY_ICON, DUMMY_TARGET, MAX_EXECUTED_UNITS
 
 
 def format_progress_single_track(
     dummy_count: int,
     executed_units: int,
     max_dummy: int = int(DUMMY_TARGET),
-    max_units: int = int(UNIT_DIVISOR),
+    max_units: int = int(MAX_EXECUTED_UNITS),
     filled_char: Optional[str] = None,
     empty_char: Optional[str] = None,
     include_counts: bool = True

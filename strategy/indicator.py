@@ -3,9 +3,15 @@ strategy/indicator.py
 5일선, 60일선 방향, 전고점/전저점, 낙폭률/반등폭 산출 지표 계산 모듈
 """
 
+import time
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 import pandas as pd
+from config import SMA_4H_PERIOD
 from utils.logger import logger
+
+KST = timezone(timedelta(hours=9))
+FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 
 
 class IndicatorCalculator:
@@ -90,21 +96,53 @@ class IndicatorCalculator:
         return indicators
 
     @staticmethod
-    def calculate_4h(df_4h: pd.DataFrame) -> Dict[str, Any]:
+    def calculate_4h(df_4h: pd.DataFrame, now_ms: Optional[int] = None) -> Dict[str, Any]:
         """
         4시간봉 OHLCV 데이터를 분석하여 2단계 트레일링 매도 판단 지표를 반환합니다.
+        - 실시간 지표(realtime 모드): 진행 중 캔들(iloc[-1]) 포함 SMA5 vs 현재가 (기존 방식)
+        - 완성봉 지표(closed_candle 모드): 마감 완료된 4H 캔들만으로 SMA5 vs 최근 완성봉 종가
+          (완성 판정: 캔들 시작 timestamp + 4시간 <= now_ms)
         """
-        if df_4h.empty or len(df_4h) < 5:
-            raise ValueError(f"4시간봉 지표 산출을 위해서는 최소 5개 이상의 캔들이 필요합니다. (현재: {len(df_4h)}개)")
+        min_len = SMA_4H_PERIOD + 1
+        if df_4h.empty or len(df_4h) < min_len:
+            raise ValueError(f"4시간봉 지표 산출을 위해서는 최소 {min_len}개 이상의 캔들이 필요합니다. (현재: {len(df_4h)}개)")
 
+        now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         close_series = df_4h['close'].astype(float)
-        sma5_4h = float(close_series.rolling(window=5).mean().iloc[-1])
+        sma5_4h = float(close_series.rolling(window=SMA_4H_PERIOD).mean().iloc[-1])
         current_price = float(close_series.iloc[-1])
-        prev_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else current_price
+        prev_close = float(close_series.iloc[-2])
 
-        # 4H 5MA 대비 위치
+        # [실시간] 4H 5MA 대비 위치 (진행 중 캔들 포함)
         is_below_sma5_4h = current_price < sma5_4h  # 롱 꺾임 (하향 이탈)
         is_above_sma5_4h = current_price > sma5_4h  # 숏 꺾임 (상향 돌파)
+
+        # [완성봉] 마감 완료된 캔들만 사용
+        if 'timestamp' in df_4h.columns:
+            close_ts_series = df_4h['timestamp'].astype('int64') + FOUR_HOURS_MS
+        else:
+            # timestamp 컬럼이 없으면 마지막 캔들을 진행 중으로 간주
+            close_ts_series = pd.Series([0] * (len(df_4h) - 1) + [now_ms + 1], index=df_4h.index)
+        closed_mask = close_ts_series <= now_ms
+        closed_closes = close_series[closed_mask]
+
+        if len(closed_closes) >= SMA_4H_PERIOD:
+            closed_close = float(closed_closes.iloc[-1])
+            closed_sma5_4h = float(closed_closes.iloc[-SMA_4H_PERIOD:].mean())
+            closed_candle_close_ts = int(close_ts_series[closed_mask].iloc[-1])
+            closed_candle_close_dt = (
+                datetime.fromtimestamp(closed_candle_close_ts / 1000, tz=KST).strftime('%Y-%m-%d %H:%M')
+                if closed_candle_close_ts > 0 else ""
+            )
+            is_closed_below_sma5_4h = closed_close < closed_sma5_4h
+            is_closed_above_sma5_4h = closed_close > closed_sma5_4h
+        else:
+            closed_close = 0.0
+            closed_sma5_4h = 0.0
+            closed_candle_close_ts = 0
+            closed_candle_close_dt = ""
+            is_closed_below_sma5_4h = False
+            is_closed_above_sma5_4h = False
 
         indicators_4h = {
             'current_price': current_price,
@@ -112,12 +150,19 @@ class IndicatorCalculator:
             'prev_close': prev_close,
             'is_below_sma5_4h': is_below_sma5_4h,
             'is_above_sma5_4h': is_above_sma5_4h,
+            'closed_close': closed_close,
+            'closed_sma5_4h': closed_sma5_4h,
+            'closed_candle_close_ts': closed_candle_close_ts,
+            'closed_candle_close_dt': closed_candle_close_dt,
+            'is_closed_below_sma5_4h': is_closed_below_sma5_4h,
+            'is_closed_above_sma5_4h': is_closed_above_sma5_4h,
             'last_candle_date': str(df_4h['datetime'].iloc[-1]) if 'datetime' in df_4h.columns else ""
         }
 
         logger.info(
-            f"[Indicators 4H] 현재가: ${current_price:,.2f}, 4H SMA5: ${sma5_4h:,.2f} | "
-            f"롱하향이탈: {is_below_sma5_4h}, 숏상향돌파: {is_above_sma5_4h}"
+            f"[Indicators 4H] 현재가: ${current_price:,.2f}, 실시간 SMA5: ${sma5_4h:,.2f} | "
+            f"완성봉({closed_candle_close_dt} 마감) 종가: ${closed_close:,.2f}, 완성봉 SMA5: ${closed_sma5_4h:,.2f} | "
+            f"실시간 하향/상향: {is_below_sma5_4h}/{is_above_sma5_4h}, 완성봉 하향/상향: {is_closed_below_sma5_4h}/{is_closed_above_sma5_4h}"
         )
         return indicators_4h
 
