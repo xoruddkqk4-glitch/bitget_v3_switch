@@ -184,8 +184,9 @@ class CycleManager:
 
     def reset_incomplete_dummy(self, strategy_name: str, trigger_source: str, date_str: str) -> bool:
         """
-        상대 전략의 실전 매수(BUY_UNIT) 체결 시, 아직 실전 매수에 진입하지 않은 상태(executed_units == 0)의
-        미완성 더미(dummy_count > 0)를 0/2로 초기화합니다.
+        상대 전략의 최초 실전 매수(BUY_UNIT 1회차) 체결 시, 아직 실전 매수에 진입하지 않은 상태(executed_units == 0)의
+        과거 미완성 유령 더미(dummy_count > 0)를 0/2로 초기화합니다.
+        (상대 전략 2회차 이후 추가 매수 시 발생하는 반대편 헷지 더미는 보존됨)
         Returns:
             bool: 초기화가 실제로 수행되었는지 여부
         """
@@ -197,8 +198,8 @@ class CycleManager:
             s["last_action_date"] = date_str
             self._save_state(self.state)
             logger.info(
-                f"[CycleManager] [{strategy_name}] 상대 전략({trigger_source}) 실제 매수 체결로 "
-                f"미완성 더미({old_dummy}/2) -> 0/2 초기화 완료"
+                f"[CycleManager] [{strategy_name}] 상대 전략({trigger_source}) 최초 실제 매수 체결로 "
+                f"과거 미완성 유령 더미({old_dummy}/2) -> 0/2 초기화 완료"
             )
             return True
         return False

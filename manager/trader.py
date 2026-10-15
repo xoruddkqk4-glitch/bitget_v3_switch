@@ -585,12 +585,12 @@ class Trader:
             f"{cfg['emoji']} {unit_label} {cfg['entry_summary']} ({entry_reason})"
         )
 
-        # 4) 체결 직후: 상대 전략의 미완성 더미 초기화 트리거
-        if self.cycles.reset_incomplete_dummy(opposite, trigger_source=strategy_name, date_str=date_str):
+        # 4) 체결 직후: 최초 1회차 실전 매수 진입 시에만 상대 전략의 과거 유령 더미 초기화
+        if executed == 1 and self.cycles.reset_incomplete_dummy(opposite, trigger_source=strategy_name, date_str=date_str):
             bar_reset = format_progress_single_track(0, 0, include_counts=False)
             opp_label = cfg["opp_label"]
             execution_logs.append(
-                f"🔄 [{opp_label} 더미 초기화] {label} 실전 매수 체결로 {opp_label} 미완성 더미 리셋: {bar_reset} (더미 0/2)"
+                f"🔄 [{opp_label} 더미 초기화] {label} 최초 실전 매수 체결로 {opp_label} 과거 유령 더미 리셋: {bar_reset} (더미 0/2)"
             )
             self.excel.append_record(
                 date_str=date_str,
@@ -601,7 +601,7 @@ class Trader:
                 unit_label="더미 초기화 (0/2)",
                 dummy_status="0 / 2",
                 total_balance=self.last_total_balance,
-                note=f"{label} 실전 매수 체결에 따른 {opp_label} 미완성 더미 0/2 초기화"
+                note=f"{label} 최초 실전 매수 체결에 따른 {opp_label} 과거 유령 더미 0/2 초기화"
             )
 
         # 5) 다음 전략 유닛 산정을 위한 잔고 재조회 (실패해도 이미 체결된 주문 기록은 유지)
