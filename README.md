@@ -515,6 +515,22 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile config.py` 구문 오류 0건 통과
   - `python -m py_compile main.py` 구문 오류 0건 통과
 
-
+## [2026-10-20 20:57] 업데이트 이력 (Commit ID: a4dde33)
+- **수정 내용**:
+  - **MAX_EXECUTED_UNITS 10 → 13 확대 (`config.py`)**:
+    - 싸이클당 실제 매수 최대 회차를 10에서 13으로 확대
+    - `UNIT_DIVISOR=15.0` 유지, 가중치 합산 15.25 Unit(101.7%) — 동적 잔고 축소로 실운영 안전
+    - `WEIGHTED_UNIT_THRESHOLD=4`, `WEIGHT_NORMAL=1.0`, `WEIGHT_BOOST=1.25` 유지 (Original PRD 2단계 가중치 구조 계승)
+    - $10,000 기준 -3% 연속 하락 시뮬레이션: 13회차까지 전부 체결 확인, 잔여 여력 $426(4.3%)
+  - **진행바 아이콘 12칸 → 15칸 (`utils/formatters.py`)**:
+    - docstring 예시를 더미 2칸 + 실제 13칸 = 총 15칸으로 업데이트
+    - `max_units` 기본값은 `int(MAX_EXECUTED_UNITS)` 참조이므로 자동 반영
+  - **영향 없는 파일 (config import 자동 반영)**:
+    - `manager/cycle_manager.py`, `manager/trader.py`, `main.py`: 최대 회차 판정·메시지 표시 자동 반영
+    - `state.json`: 스키마 변경 없음, 기존 `executed_units=2` 그대로 3회차부터 이어서 작동
+- **검증 결과**:
+  - `python -m py_compile config.py` 구문 오류 0건 통과
+  - `python -m py_compile utils/formatters.py` 구문 오류 0건 통과
+  - 설정값 확인: `UNIT_DIVISOR=15.0, MAX_EXECUTED_UNITS=13, WEIGHTED_UNIT_THRESHOLD=4, WEIGHT_NORMAL=1.0, WEIGHT_BOOST=1.25`
 
 

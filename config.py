@@ -59,7 +59,7 @@ ALERT_COOLDOWN_SEC = 3600
 # 3. 자금 관리 및 유닛 가중치 설정 (PRD 섹션 2)
 # ------------------------------------------------------------------------------
 UNIT_DIVISOR = 15.0            # 1.0 Unit = 기준 잔고 / 15 (보유금 추가에 따른 분할 매수 여력 확대)
-MAX_EXECUTED_UNITS = 10        # 싸이클당 실제 매수 최대 회차 (UNIT_DIVISOR와 분리된 독립 상한)
+MAX_EXECUTED_UNITS = 13        # 싸이클당 실제 매수 최대 회차 (UNIT_DIVISOR와 분리된 독립 상한)
 MARGIN_SAFETY_RATIO = 0.95     # 1회 주문금액 상한 = 가용 잔고 × 레버리지 × 0.95 (증거금 부족 주문 거절 방지)
 MIN_ORDER_USD = 5.0            # Bitget 선물 최소 주문 가능 금액 ($5.0)
 DUMMY_TARGET = 2               # 1~2회차 신호는 더미(0원) 소진 처리
