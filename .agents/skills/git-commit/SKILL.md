@@ -49,7 +49,15 @@ description: Triggered strictly by '/git-commit', '/action git-commit', or expli
 4. **Git Staging, Commit & Push**:
    - `git add .`
    - 상세 메시지로 `git commit -m "..."`
-   - `git push origin main` (또는 현재 작업 브랜치)
+   - 원격 저장소가 설정되어 있는 경우 `git push origin main`
 
-5. **결과 보고**:
-   - 최종 커밋 해시, README 반영 사항, 푸시 결과를 사용자에게 종합 보고합니다.
+5. **EC2 실서버 조건부 자동 배포 (A안 통합 워크플로우)**:
+   - 해당 프로젝트에 EC2 서버 접속 환경(`~/.ssh/config`의 `ec2` 호스트 및 원격 경로 `/var/autobot/...`)이 연동되어 있는 경우:
+     - `scp -o ConnectTimeout=5 <수정파일> ec2:<원격경로>` 파일 전송
+     - 원격 서버 파이썬 정적 문법 검증: `ssh ec2 "python3 -m py_compile <원격경로>"`
+     - 기존 프로세스 안전 종료: `ssh ec2 "pkill -15 -f '<스크립트파일명>'"`
+     - 종료 알림(`⏹️ [봇 종료]`) 및 시작 알림(`🚀 [봇 시작]`) 텔레그램 발송 확인
+     - 실시간 실행 및 체결 로그(`tail -n 25`) 확인
+
+6. **결과 보고**:
+   - 최종 커밋 해시, README 반영 사항, EC2 배포 및 봇 재기동/체결 결과를 사용자에게 종합 보고합니다.

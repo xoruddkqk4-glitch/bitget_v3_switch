@@ -231,6 +231,27 @@ def run_pipeline() -> bool:
         desc_a = escape_tg(trader.last_eval_a.get('summary', '조건 판정 정보 없음'))
         desc_b = escape_tg(trader.last_eval_b.get('summary', '조건 판정 정보 없음'))
 
+        # 포지션별 수익률/수익금 요약 (포지션 대조 아래 표시)
+        pos_pnl_lines = []
+        if qty_a > 0 and avg_a > 0:
+            pos_pnl_lines.append(f"  └ 롱: {qty_a:,.4f} Qty @ ${avg_a:,.2f} → {pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)")
+        if qty_b > 0 and avg_b > 0:
+            pos_pnl_lines.append(f"  └ 숏: {qty_b:,.4f} Qty @ ${avg_b:,.2f} → {pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)")
+        if not pos_pnl_lines:
+            pos_pnl_lines.append("  └ 보유 포지션 없음")
+        pos_pnl_block = "\n".join(pos_pnl_lines)
+
+        # 금일 집행 내역: 실제 매수(BUY_EXECUTED)가 발생한 포지션만 표시
+        eval_a_status = trader.last_eval_a.get('status', '')
+        eval_b_status = trader.last_eval_b.get('status', '')
+        entry_lines = []
+        if eval_a_status == 'BUY_EXECUTED':
+            entry_lines.append(f"• <b>전략 A (롱):</b> {desc_a}")
+        if eval_b_status == 'BUY_EXECUTED':
+            entry_lines.append(f"• <b>전략 B (숏):</b> {desc_b}")
+        if not entry_lines:
+            entry_lines.append("• (금일 실전 매수 집행 없음)")
+
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 마감 보고]</b>\n\n"
             f"• <b>기준 일시:</b> {kst_str}\n"
@@ -238,6 +259,7 @@ def run_pipeline() -> bool:
             f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
             f"• <b>1.0 Unit 기본 금액:</b> 단일 ${unit_base_usd:,.2f} / 헤지 ${hedge_unit_usd:,.2f}\n"
             f"• <b>포지션 대조:</b> {escape_tg(format_reconcile_summary(recon_results))}\n"
+            f"{pos_pnl_block}\n"
             f"• <b>일봉 기준일:</b> {candle_date_display} (전일 마감 완성봉)\n"
             f"• <b>실시간 현재가:</b> ${current_price:,.2f} (기준봉 종가: ${indicators.get('eval_close', current_price):,.2f}, "
             f"캔들: {indicators['candle_change']*100:+.2f}%, 전일비: {indicators['daily_change']*100:+.2f}%)\n"
@@ -254,13 +276,10 @@ def run_pipeline() -> bool:
             f"• 평단가: ${avg_b:,.2f} | <b>평가손익:</b> {pnl_str_b}\n"
             f"• <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n\n"
             f"<b>[금일 집행 내역]</b>\n"
-            f"• <b>전략 A (롱):</b> {desc_a}\n"
-            f"• <b>전략 B (숏):</b> {desc_b}\n"
         )
+        summary_msg += "\n".join(entry_lines)
         if logs:
-            summary_msg += "\n".join(f"• {escape_tg(log)}" for log in logs)
-        else:
-            summary_msg += "• (금일 실제 주문 집행 없음)"
+            summary_msg += "\n" + "\n".join(f"• {escape_tg(log)}" for log in logs)
 
         notifier.send_message(summary_msg)
         try:
