@@ -64,7 +64,19 @@ class Trader:
         self.last_total_balance: float = 0.0
         self.last_free_margin: float = 0.0
         self.last_unit_base_usd: float = 0.0
-        self.last_eval: Dict[str, Dict[str, Any]] = {name: {} for name in STRATEGY_NAMES}
+        self.last_eval: Dict[str, Dict[str, Any]] = {
+            name: {
+                "signal_met": False,
+                "status": "INIT",
+                "reason": "",
+                "summary": "",
+                "entry_reason": "",
+                "exit_reason": "",
+                "action_title": "",
+                "action_detail": "",
+            }
+            for name in STRATEGY_NAMES
+        }
 
     # ------------------------------------------------------------------
     # 하위 호환 속성 (main.py 일일 보고서용)
@@ -93,13 +105,30 @@ class Trader:
         self.last_unit_base_usd = total_balance / UNIT_DIVISOR
         return total_balance, free_margin
 
-    def _set_eval(self, strategy_name: str, signal_met: bool, status: str, reason: str, summary: str):
+    def _set_eval(
+        self,
+        strategy_name: str,
+        signal_met: bool,
+        status: str,
+        reason: str,
+        summary: str,
+        entry_reason: str = "",
+        exit_reason: str = "",
+        action_title: str = "",
+        action_detail: str = ""
+    ):
+        prev = self.last_eval.get(strategy_name, {})
         self.last_eval[strategy_name] = {
             "signal_met": signal_met,
             "status": status,
             "reason": reason,
             "summary": summary,
+            "entry_reason": entry_reason or prev.get("entry_reason", reason),
+            "exit_reason": exit_reason or prev.get("exit_reason", ""),
+            "action_title": action_title or prev.get("action_title", ""),
+            "action_detail": action_detail or prev.get("action_detail", ""),
         }
+
 
     def _resolve_close_qty(self, strategy_name: str, state_qty: float) -> float:
         """청산 수량: 실전은 거래소 실제 포지션 수량, 모의는 state 수량"""
@@ -131,7 +160,19 @@ class Trader:
         date_str = indicators.get('candle_date', '')
         current_price = indicators['current_price']
         execution_logs: List[str] = []
-        self.last_eval = {name: {} for name in STRATEGY_NAMES}
+        self.last_eval = {
+            name: {
+                "signal_met": False,
+                "status": "INIT",
+                "reason": "",
+                "summary": "",
+                "entry_reason": "",
+                "exit_reason": "",
+                "action_title": "",
+                "action_detail": "",
+            }
+            for name in STRATEGY_NAMES
+        }
 
         # 1. 총 평가 잔고, 실시간 가용 잔고 및 1 Unit 기준금액 산출
         total_balance, free_margin = self._refresh_balance()
@@ -155,7 +196,10 @@ class Trader:
                 execution_logs.append(f"⛔ [{label} 매매 차단] 거래소 포지션 불일치로 청산/진입 평가를 생략했습니다.")
                 self._set_eval(
                     name, False, "BLOCKED_MISMATCH", "거래소 포지션 불일치",
-                    "⛔ 포지션 불일치로 매매 차단 (python main.py --reconcile 확인 필요)"
+                    "⛔ 포지션 불일치로 매매 차단 (python main.py --reconcile 확인 필요)",
+                    exit_reason="거래소 포지션 불일치로 차단",
+                    action_title="매매 차단 (포지션 불일치)",
+                    action_detail="대조 불일치로 청산/진입 모두 생략"
                 )
                 continue
             try:
@@ -167,7 +211,12 @@ class Trader:
                 logger.error(f"[Trader] [{name}] {label} 청산 처리 실패: {e}", exc_info=True)
                 execution_logs.append(f"❌ [{label} 청산 처리 실패] {e}")
                 failed.add(name)
-                self._set_eval(name, False, "EXIT_FAILED", str(e), f"❌ 청산 처리 실패로 진입 평가 생략 ({e})")
+                self._set_eval(
+                    name, False, "EXIT_FAILED", str(e), f"❌ 청산 처리 실패로 진입 평가 생략 ({e})",
+                    exit_reason=f"청산 처리 실패 ({e})",
+                    action_title="청산 실패",
+                    action_detail="예외 발생으로 당일 평가 중단"
+                )
 
         # 4. [매수 진입 단계] 진입 평가
         for name in STRATEGY_NAMES:
@@ -179,11 +228,11 @@ class Trader:
             except OrderSkipError as e:
                 logger.warning(f"[Trader] [{name}] {label} 진입 주문 스킵: {e}")
                 execution_logs.append(f"⚠️ [{label} 진입 주문 스킵] {e}")
-                self._set_eval(name, True, "SKIPPED_ORDER", str(e), f"⚠️ 주문 스킵 ({e})")
+                self._set_eval(name, True, "SKIPPED_ORDER", str(e), f"⚠️ 주문 스킵 ({e})", action_title="주문 스킵", action_detail=str(e))
             except Exception as e:
                 logger.error(f"[Trader] [{name}] {label} 진입 처리 실패: {e}", exc_info=True)
                 execution_logs.append(f"❌ [{label} 진입 처리 실패] {e}")
-                self._set_eval(name, True, "ENTRY_FAILED", str(e), f"❌ 진입 처리 실패 ({e})")
+                self._set_eval(name, True, "ENTRY_FAILED", str(e), f"❌ 진입 처리 실패 ({e})", action_title="진입 실패", action_detail=str(e))
 
         return execution_logs
 
@@ -207,6 +256,20 @@ class Trader:
             cycle_info=state
         )
 
+        total_qty = float(state.get('total_qty', 0.0))
+        executed_units = int(state.get('executed_units', 0))
+
+        if total_qty <= 0 and executed_units <= 0:
+            self.last_eval[strategy_name]["exit_reason"] = "미보유 (해당 없음)"
+        elif state.get("trailing_mode", False):
+            self.last_eval[strategy_name]["exit_reason"] = f"2단계 트레일링 감시 진행 중 ({exit_reason})"
+        elif not exit_met:
+            self.last_eval[strategy_name]["exit_reason"] = exit_reason
+        elif action == "ENTER_STAGE2":
+            self.last_eval[strategy_name]["exit_reason"] = f"목표가 도달 → 2단계 감시 돌입 ({exit_reason})"
+        elif action == "IMMEDIATE_EXIT":
+            self.last_eval[strategy_name]["exit_reason"] = f"목표가 도달 → 즉시 전량 청산 ({exit_reason})"
+
         # 2단계 트레일링 진행 중: 재돌입/즉시청산 없이 보존선을 유리한 방향으로만 갱신 (래칫)
         if state.get("trailing_mode", False):
             self._handle_trailing_ratchet(
@@ -218,6 +281,7 @@ class Trader:
         if not exit_met:
             logger.info(f"[Trader] [{strategy_name}] {label} 1차 청산 조건 미충족 ({exit_reason})")
             return False
+
 
         if action == "ENTER_STAGE2":
             # 상승장/과낙폭(과반등) 익절: 즉시 청산하지 않고 2단계 4H 5MA 감시 모드 활성화
@@ -417,17 +481,24 @@ class Trader:
         cleared_today: bool,
         execution_logs: List[str]
     ):
-        """진입 신호 평가 및 더미 소진/실전 매수 집행"""
+        """진입 신호 평가 및 더미/실전 매수 집행"""
         cfg = SIDE_CFG[strategy_name]
         label = cfg["label"]
         strategy = self.strategies[strategy_name]
 
         # 최신 state 재조회 (당일 트레일링 돌입 여부 반영)
         state = self.cycles.get_strategy_state(strategy_name)
+        total_qty = float(state.get("total_qty", 0.0))
+
         if state.get("trailing_mode", False):
             reason = "2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
             logger.info(f"[Trader] [{strategy_name}] {reason}")
-            self._set_eval(strategy_name, False, "TRAILING_ACTIVE", reason, "🟡 2단계 트레일링 감시 진행 중 (신규 진입 스킵)")
+            self._set_eval(
+                strategy_name, False, "TRAILING_ACTIVE", reason, "🟡 2단계 트레일링 감시 진행 중 (신규 진입 스킵)",
+                entry_reason=reason,
+                action_title="트레일링 감시 중 (매매 없음)",
+                action_detail="4시간봉 2단계 매도 감시 유지"
+            )
             return
 
         entry_met, entry_reason = strategy.check_entry_signal(
@@ -436,7 +507,14 @@ class Trader:
         )
         if not entry_met:
             logger.info(f"[Trader] [{strategy_name}] {label} 진입 신호 없음: {entry_reason}")
-            self._set_eval(strategy_name, False, "NO_SIGNAL", entry_reason, f"⚪ 조건 미충족 ({entry_reason})")
+            action_title = "포지션 유지 (매매 없음)" if total_qty > 0 else "관망 (신호 미발생)"
+            action_detail = f"기존 포지션({total_qty:,.4f} Qty) 홀딩 유지" if total_qty > 0 else "포지션 미보유 유지"
+            self._set_eval(
+                strategy_name, False, "NO_SIGNAL", entry_reason, f"⚪ 조건 미충족 ({entry_reason})",
+                entry_reason=entry_reason,
+                action_title=action_title,
+                action_detail=action_detail
+            )
             return
 
         logger.info(f"[Trader] [{strategy_name}] {label} 진입 신호 발생: {entry_reason}")
@@ -456,8 +534,13 @@ class Trader:
                 note=f"{entry_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
             )
             bar = format_progress_single_track(1, 0, include_counts=False)
-            execution_logs.append(f"🟡 [{label} 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 소진: {bar}")
-            self._set_eval(strategy_name, True, "DUMMY_TRANSFERRED", entry_reason, f"🟡 1차 더미 이관 ({entry_reason})")
+            execution_logs.append(f"🟡 [{label} 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 진입: {bar}")
+            self._set_eval(
+                strategy_name, True, "DUMMY_TRANSFERRED", entry_reason, f"🟡 1차 더미 이관 ({entry_reason})",
+                entry_reason=entry_reason,
+                action_title="더미 1차 진입 (당일 청산 이관)",
+                action_detail="당일 청산으로 신규 싸이클 1차 더미 진입"
+            )
             return
 
         action_type, weight, unit_label = self.cycles.determine_buy_action(strategy_name)
@@ -467,7 +550,10 @@ class Trader:
             execution_logs.append(f"⏸️ [{label} 추가 매수 중단] 최대 {MAX_EXECUTED_UNITS}회차 도달 ({entry_reason})")
             self._set_eval(
                 strategy_name, True, "SKIPPED_MAX_UNITS", reason,
-                f"⏸️ 최대 {MAX_EXECUTED_UNITS}회차 도달로 추가 매수 중단"
+                f"⏸️ 최대 {MAX_EXECUTED_UNITS}회차 도달로 추가 매수 중단",
+                entry_reason=entry_reason,
+                action_title=f"최대 {MAX_EXECUTED_UNITS}차 도달 (추가 매수 중단)",
+                action_detail="최대 차수 도달로 추가 매수 없이 포지션 유지"
             )
             return
 
@@ -482,11 +568,16 @@ class Trader:
                 unit_label=unit_label,
                 dummy_status=f"{dummy_count} / 2",
                 total_balance=self.last_total_balance,
-                note=f"{entry_reason} (더미 방어 소진)"
+                note=f"{entry_reason} (더미 방어 진입)"
             )
             bar = format_progress_single_track(dummy_count, 0, include_counts=False)
-            execution_logs.append(f"⚪ [{label} 더미 소진] {unit_label} 완료: {bar} (더미 {dummy_count}/2)")
-            self._set_eval(strategy_name, True, "DUMMY_CONSUMED", entry_reason, f"⚪ {unit_label} 소진 ({entry_reason})")
+            execution_logs.append(f"⚪ [{label} 더미 진입] {unit_label} 완료: {bar} (더미 {dummy_count}/2)")
+            self._set_eval(
+                strategy_name, True, "DUMMY_CONSUMED", entry_reason, f"⚪ {unit_label} 진입 ({entry_reason})",
+                entry_reason=entry_reason,
+                action_title=f"더미 {dummy_count}차 진입 완료 ({dummy_count}/2)",
+                action_detail=f"실전 진입 전 더미 {dummy_count}차 방어 작동"
+            )
             return
 
         self._execute_real_entry(
@@ -498,6 +589,7 @@ class Trader:
             entry_reason=entry_reason,
             execution_logs=execution_logs
         )
+
 
     def _execute_real_entry(
         self,
@@ -546,7 +638,10 @@ class Trader:
             self._set_eval(
                 strategy_name, True, "SKIPPED_MIN_ORDER",
                 f"{entry_reason} (주문금액 ${target_usd:,.2f} < 최소한도 ${MIN_ORDER_USD:,.2f})",
-                f"⚠️ 주문 스킵 (주문금액 ${target_usd:,.1f} < ${MIN_ORDER_USD:,.1f})"
+                f"⚠️ 주문 스킵 (주문금액 ${target_usd:,.1f} < ${MIN_ORDER_USD:,.1f})",
+                entry_reason=entry_reason,
+                action_title=f"주문 스킵 ({unit_label})",
+                action_detail=f"주문금액(${target_usd:,.2f}) 최소한도 미만으로 스킵"
             )
             return
 
@@ -591,8 +686,12 @@ class Trader:
         )
         self._set_eval(
             strategy_name, True, "BUY_EXECUTED", entry_reason,
-            f"{cfg['emoji']} {unit_label} {cfg['entry_summary']} ({entry_reason})"
+            f"{cfg['emoji']} {unit_label} {cfg['entry_summary']} ({entry_reason})",
+            entry_reason=entry_reason,
+            action_title=f"실전 {executed}차 진입 완료 ({executed}/{MAX_EXECUTED_UNITS})",
+            action_detail=f"${fill_price:,.2f}에 {result.filled:,.4f} Qty 체결 (${invested_usd:,.1f})"
         )
+
 
         # 4) 체결 직후: 최초 1회차 실전 매수 진입 시에만 상대 전략의 과거 유령 더미 초기화
         if executed == 1 and self.cycles.reset_incomplete_dummy(opposite, trigger_source=strategy_name, date_str=date_str):

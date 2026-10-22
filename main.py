@@ -180,12 +180,11 @@ def run_pipeline() -> bool:
         unit_base_usd = trader.last_unit_base_usd
         hedge_unit_usd = free_margin / UNIT_DIVISOR
 
-        kst_now = datetime.now(KST)
-        kst_str = kst_now.strftime('%Y-%m-%d %H:%M:%S KST')
-        candle_date_raw = indicators.get('candle_date', '')
-        candle_date_display = f"{candle_date_raw} (KST)" if candle_date_raw else f"{kst_now.strftime('%Y-%m-%d')} (KST)"
-
         current_price = indicators['current_price']
+        eval_close = indicators.get('eval_close', current_price)
+        candle_change = indicators.get('candle_change', 0.0) * 100.0
+        change_icon = "🔻" if candle_change < 0 else "🔺"
+        trend_text = "상승" if indicators.get('is_sma60_rising') else "하락"
 
         # [전략 A - Long] 평가손익 및 실현손익
         qty_a = updated_state_a.get('total_qty', 0.0)
@@ -194,13 +193,17 @@ def run_pipeline() -> bool:
             pnl_usd_a = (current_price - avg_a) * qty_a
             pnl_pct_a = ((current_price / avg_a) - 1.0) * 100.0
             pnl_str_a = f"<b>{pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)</b>"
+            pos_line_a = f"{qty_a:,.4f} Qty (평단 ${avg_a:,.2f})"
+            pos_summary_a = f"롱 {pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)"
         else:
-            pnl_str_a = "$0.00 USD (0.00%) [포지션 없음]"
+            pnl_str_a = "$0.00 USD (0.00%)"
+            pos_line_a = "미보유 (0.0000 Qty)"
+            pos_summary_a = "롱 미보유"
 
         cum_pnl_a = updated_state_a.get('cumulative_realized_pnl', 0.0)
         last_pnl_a = updated_state_a.get('last_realized_pnl', 0.0)
         last_pct_a = updated_state_a.get('last_realized_pct', 0.0)
-        last_closed_a_str = f" (직전 확정: {last_pnl_a:+,.2f} USD, {last_pct_a:+.2f}%)" if last_pnl_a != 0 else ""
+        last_closed_a_str = f" (직전: {last_pnl_a:+,.2f} USD, {last_pct_a:+.2f}%)" if last_pnl_a != 0 else ""
 
         # [전략 B - Short] 평가손익 및 실현손익
         qty_b = updated_state_b.get('total_qty', 0.0)
@@ -209,79 +212,95 @@ def run_pipeline() -> bool:
             pnl_usd_b = (avg_b - current_price) * qty_b
             pnl_pct_b = ((avg_b - current_price) / avg_b) * 100.0
             pnl_str_b = f"<b>{pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)</b>"
+            pos_line_b = f"{qty_b:,.4f} Qty (평단 ${avg_b:,.2f})"
+            pos_summary_b = f"숏 {pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)"
         else:
-            pnl_str_b = "$0.00 USD (0.00%) [포지션 없음]"
+            pnl_str_b = "$0.00 USD (0.00%)"
+            pos_line_b = "미보유 (0.0000 Qty)"
+            pos_summary_b = "숏 미보유"
 
         cum_pnl_b = updated_state_b.get('cumulative_realized_pnl', 0.0)
         last_pnl_b = updated_state_b.get('last_realized_pnl', 0.0)
         last_pct_b = updated_state_b.get('last_realized_pct', 0.0)
-        last_closed_b_str = f" (직전 확정: {last_pnl_b:+,.2f} USD, {last_pct_b:+.2f}%)" if last_pnl_b != 0 else ""
+        last_closed_b_str = f" (직전: {last_pnl_b:+,.2f} USD, {last_pct_b:+.2f}%)" if last_pnl_b != 0 else ""
 
-        # 차수 진행 상태 인디케이터
-        progress_a = format_progress_single_track(
-            dummy_count=updated_state_a.get('dummy_count', 0),
-            executed_units=updated_state_a.get('executed_units', 0)
-        )
-        progress_b = format_progress_single_track(
-            dummy_count=updated_state_b.get('dummy_count', 0),
-            executed_units=updated_state_b.get('executed_units', 0)
-        )
+        # 차수 게이지 바 (only_bar=True로 독립 행 분리)
+        dummy_a = updated_state_a.get('dummy_count', 0)
+        exec_a = updated_state_a.get('executed_units', 0)
+        gauge_bar_a = format_progress_single_track(dummy_a, exec_a, only_bar=True)
 
-        # 당일 전략별 판정 사유
-        desc_a = escape_tg(trader.last_eval_a.get('summary', '조건 판정 정보 없음'))
-        desc_b = escape_tg(trader.last_eval_b.get('summary', '조건 판정 정보 없음'))
+        dummy_b = updated_state_b.get('dummy_count', 0)
+        exec_b = updated_state_b.get('executed_units', 0)
+        gauge_bar_b = format_progress_single_track(dummy_b, exec_b, only_bar=True)
 
-        # 포지션별 수익률/수익금 요약 (포지션 대조 아래 표시)
-        pos_pnl_lines = []
-        if qty_a > 0 and avg_a > 0:
-            pos_pnl_lines.append(f"  └ 롱: {qty_a:,.4f} Qty @ ${avg_a:,.2f} → {pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)")
-        if qty_b > 0 and avg_b > 0:
-            pos_pnl_lines.append(f"  └ 숏: {qty_b:,.4f} Qty @ ${avg_b:,.2f} → {pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)")
-        if not pos_pnl_lines:
-            pos_pnl_lines.append("  └ 보유 포지션 없음")
-        pos_pnl_block = "\n".join(pos_pnl_lines)
+        # 1.0 Unit 기본 금액 라벨: 상대편 보유 여부에 따라 단일/헤지 표기
+        unit_info_a = f"헤지(롱) ${hedge_unit_usd:,.0f}" if qty_b > 0 else f"단일(롱) ${unit_base_usd:,.0f}"
+        unit_info_b = f"헤지(숏) ${hedge_unit_usd:,.0f}" if qty_a > 0 else f"단일(숏) ${unit_base_usd:,.0f}"
+        unit_line = f"{unit_info_a} / {unit_info_b}"
 
-        # 금일 집행 내역: 실제 매수(BUY_EXECUTED)가 발생한 포지션만 표시
-        eval_a_status = trader.last_eval_a.get('status', '')
-        eval_b_status = trader.last_eval_b.get('status', '')
-        entry_lines = []
-        if eval_a_status == 'BUY_EXECUTED':
-            entry_lines.append(f"• <b>전략 A (롱):</b> {desc_a}")
-        if eval_b_status == 'BUY_EXECUTED':
-            entry_lines.append(f"• <b>전략 B (숏):</b> {desc_b}")
-        if not entry_lines:
-            entry_lines.append("• (금일 실전 매수 집행 없음)")
+        # 당일 전략별 판단 결과 (진입 -> 청산 -> 조치 순서 통일)
+        eval_a = trader.last_eval_a
+        eval_b = trader.last_eval_b
+
+        action_title_a = escape_tg(eval_a.get("action_title") or ("더미 진입 완료" if eval_a.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_a > 0 else "관망 (신호 미발생)")))
+        entry_reason_a = escape_tg(eval_a.get("entry_reason") or eval_a.get("reason") or "진입 조건 정보 없음")
+        exit_reason_a = escape_tg(eval_a.get("exit_reason") or ("미보유 (해당 없음)" if qty_a <= 0 else "청산 조건 미충족"))
+        action_detail_a = escape_tg(eval_a.get("action_detail") or ("포지션 미보유 유지" if qty_a <= 0 else f"기존 포지션({qty_a:,.4f} Qty) 홀딩 유지"))
+
+        action_title_b = escape_tg(eval_b.get("action_title") or ("더미 진입 완료" if eval_b.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_b > 0 else "관망 (신호 미발생)")))
+        entry_reason_b = escape_tg(eval_b.get("entry_reason") or eval_b.get("reason") or "진입 조건 정보 없음")
+        exit_reason_b = escape_tg(eval_b.get("exit_reason") or ("미보유 (해당 없음)" if qty_b <= 0 else "청산 조건 미충족"))
+        action_detail_b = escape_tg(eval_b.get("action_detail") or ("포지션 미보유 유지" if qty_b <= 0 else f"기존 포지션({qty_b:,.4f} Qty) 홀딩 유지"))
+
+        # 포지션 동기화 요약
+        sync_status = escape_tg(format_reconcile_summary(recon_results))
+        qty_a_str = f"{qty_a:,.4f}" if qty_a > 0 else "0"
+        qty_b_str = f"{qty_b:,.4f}" if qty_b > 0 else "0"
+        sync_line = f"정상 (롱 {qty_a_str} / 숏 {qty_b_str} 일치)" if "OK" in sync_status else sync_status
 
         summary_msg = (
-            f"<b>📊 [Bitget V3 Switch 일봉 마감 보고]</b>\n\n"
-            f"• <b>기준 일시:</b> {kst_str}\n"
-            f"• <b>종목:</b> {SYMBOL}\n"
-            f"• <b>계좌 총 평가 잔고:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
-            f"• <b>1.0 Unit 기본 금액:</b> 단일 ${unit_base_usd:,.2f} / 헤지 ${hedge_unit_usd:,.2f}\n"
-            f"• <b>포지션 대조:</b> {escape_tg(format_reconcile_summary(recon_results))}\n"
-            f"{pos_pnl_block}\n"
-            f"• <b>일봉 기준일:</b> {candle_date_display} (전일 마감 완성봉)\n"
-            f"• <b>실시간 현재가:</b> ${current_price:,.2f} (기준봉 종가: ${indicators.get('eval_close', current_price):,.2f}, "
-            f"캔들: {indicators['candle_change']*100:+.2f}%, 전일비: {indicators['daily_change']*100:+.2f}%)\n"
-            f"• <b>SMA5:</b> ${indicators['sma5']:,.2f} | <b>SMA60:</b> ${indicators['sma60']:,.2f} "
-            f"({'상승' if indicators['is_sma60_rising'] else '하락'})\n\n"
-            f"<b>[전략 A - Long DCA]{trailing_info_a}</b>\n"
-            f"• 싸이클 #{updated_state_a.get('cycle_id')} | 보유: {qty_a:,.4f} Qty\n"
-            f"• <b>매수 차수:</b> {progress_a}\n"
-            f"• 평단가: ${avg_a:,.2f} | <b>평가손익:</b> {pnl_str_a}\n"
-            f"• <b>누적 실현손익:</b> {cum_pnl_a:+,.2f} USD{last_closed_a_str}\n\n"
-            f"<b>[전략 B - Short DCA]{trailing_info_b}</b>\n"
-            f"• 싸이클 #{updated_state_b.get('cycle_id')} | 보유: {qty_b:,.4f} Qty\n"
-            f"• <b>매수 차수:</b> {progress_b}\n"
-            f"• 평단가: ${avg_b:,.2f} | <b>평가손익:</b> {pnl_str_b}\n"
-            f"• <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n\n"
-            f"<b>[금일 집행 내역]</b>\n"
+            f"<b>📊 [Bitget V3 Switch 일봉 보고]</b>\n\n"
+            f"<b>🔥 [핵심 지표]</b>\n"
+            f"• <b>일봉 변동률:</b> {change_icon} <b>{candle_change:+.2f}%</b> (종가 ${eval_close:,.2f})\n"
+            f"• <b>실시간 현재가:</b> ${current_price:,.2f}\n"
+            f"• <b>이평선:</b> SMA5 ${indicators['sma5']:,.2f} / SMA60 ${indicators['sma60']:,.2f} ({trend_text})\n"
+            f"• <b>계좌:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
+            f"• <b>평가손익:</b> {pos_summary_a} / {pos_summary_b}\n"
+            f"• <b>1.0 Unit:</b> {unit_line}\n\n"
+            f"<b>🎯 [금일 집행 및 판단 결과]</b>\n\n"
+            f"🔵 <b>전략 A (롱):</b> {action_title_a}\n"
+            f"  └ <b>진입:</b> {entry_reason_a}\n"
+            f"  └ <b>청산:</b> {exit_reason_a}\n"
+            f"  └ <b>조치:</b> {action_detail_a}\n\n"
+            f"🔴 <b>전략 B (숏):</b> {action_title_b}\n"
+            f"  └ <b>진입:</b> {entry_reason_b}\n"
+            f"  └ <b>청산:</b> {exit_reason_b}\n"
+            f"  └ <b>조치:</b> {action_detail_b}\n\n"
+            f"<b>📦 [전략별 보유 및 진행 현황]</b>\n\n"
+            f"🔵 <b>전략 A (Long | Cycle #{updated_state_a.get('cycle_id')}){trailing_info_a}</b>\n"
+            f"  • 포지션: {pos_line_a}\n"
         )
-        summary_msg += "\n".join(entry_lines)
-        if logs:
-            summary_msg += "\n" + "\n".join(f"• {escape_tg(log)}" for log in logs)
+        if qty_a > 0:
+            summary_msg += f"  • <b>평가손익:</b> {pnl_str_a}\n"
+        summary_msg += (
+            f"  • <b>누적 실현손익:</b> {cum_pnl_a:+,.2f} USD{last_closed_a_str}\n"
+            f"  • <b>차수:</b> [더미 {dummy_a}/2 진입 | 실전 {exec_a}/13]\n"
+            f"    {gauge_bar_a}\n\n"
+            f"🔴 <b>전략 B (Short | Cycle #{updated_state_b.get('cycle_id')}){trailing_info_b}</b>\n"
+            f"  • 포지션: {pos_line_b}\n"
+        )
+        if qty_b > 0:
+            summary_msg += f"  • <b>평가손익:</b> {pnl_str_b}\n"
+        summary_msg += (
+            f"  • <b>누적 실현손익:</b> {cum_pnl_b:+,.2f} USD{last_closed_b_str}\n"
+            f"  • <b>차수:</b> [더미 {dummy_b}/2 진입 | 실전 {exec_b}/13]\n"
+            f"    {gauge_bar_b}\n\n"
+            f"<b>🛡️ [시스템 상태]</b>\n"
+            f"• <b>포지션 동기화:</b> {sync_line}"
+        )
 
         notifier.send_message(summary_msg)
+
         try:
             excel_logger.update_pnl_chart()
         except Exception as e_chart:
