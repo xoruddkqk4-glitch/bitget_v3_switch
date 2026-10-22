@@ -576,3 +576,13 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile sheets_logger.py utils/excel_logger.py main.py` 구문 오류 0건 통과
   - 원격 EC2 실서버(`/var/autobot/bitget_v3_switch`) 파일 전송(`scp`) 및 가상환경 문법 검증 통과
 
+## [2026-10-22 23:42] 업데이트 이력 (Commit ID: 37e62fc)
+- **수정 내용**:
+  - **구글 스프레드시트 체결 기록 전송 시 한국 표준시(KST) 타임스탬프 적용 (`sheets_logger.py`)**:
+    - EC2 서버 시스템 환경(기본 UTC 등)에 구애받지 않고 구글 시트에 전송되는 체결 일시(`timestamp`)가 한국 표준시(KST, UTC+9)로 정확히 기록되도록 명시적 타임존(`timezone(timedelta(hours=9))`) 적용
+    - `now_str = timestamp or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")` 로직 개편
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py` 로컬 구문 검증 완료 (오류 0건)
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 venv 환경 구문 검증 완료
+  - EC2 crontab 5분 틱 감시 정상 구동 확인
+

@@ -7,8 +7,10 @@ sheets_logger.py - EC2 트레이딩 봇용 구글 스프레드시트 비동기 W
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
+
+KST = timezone(timedelta(hours=9))
 
 try:
     import requests
@@ -75,7 +77,7 @@ class SheetsLogger:
                 print(f"[{self.strategy_name}] SheetsLogger: requests 라이브러리가 설치되어 있지 않습니다. (pip install requests)")
             return False
 
-        now_str = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = timestamp or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         payload = {
             "token": self.auth_token,
