@@ -24,6 +24,21 @@ from openpyxl.drawing.text import (
 from config import EXCEL_FILE, STATE_FILE
 from utils.logger import logger
 
+# [구글 시트 연동 로거 추가]
+try:
+    from sheets_logger import SheetsLogger
+except ImportError:
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    from sheets_logger import SheetsLogger
+sheet_logger = SheetsLogger(
+    webhook_url="https://script.google.com/macros/s/AKfycbws77Zb7aGqs_L5K0yLDf5iDVBXHKO_abf5eL1vlvUTh4197W-dujvmxm-vEBj8Hjdq/exec",
+    auth_token="trading_secret_2026",
+    strategy_name="v3-switch",
+    exchange="Bitget"
+)
+
 KST = timezone(timedelta(hours=9))
 
 PNL_SHEET_NAME = "손익차트"
@@ -194,6 +209,32 @@ class ExcelLogger:
 
             wb.save(self.file_path)
             logger.info(f"[ExcelLogger] 이력 기록 완료: [{strategy_name}] {event_type} - {unit_label} ({note})")
+
+            # ----------------------------------------------------
+            # ⬇️ [구글 시트 비동기 연동 추가] ⬇️
+            # ----------------------------------------------------
+            try:
+                # 이벤트 유형 정규화 (더미 매수는 BUY_DUMMY, 청산은 SELL, 매수는 BUY)
+                g_action = "BUY_DUMMY" if event_type == "BUY_DUMMY" else ("SELL" if "SELL" in event_type else "BUY")
+                g_price = float(price) if price and price > 0 else 0.0
+                g_qty = float(qty) if qty and qty > 0 else 0.0
+                g_pnl = float(realized_pnl) if realized_pnl is not None else 0.0
+                g_pct = float(pnl_pct) if pnl_pct is not None else 0.0
+                g_level = f"{strategy_name} {unit_label}"  # 예: V3+ 1Unit 또는 V3- 더미1차
+                g_note = f"[{dummy_status}] {note}".strip()
+                sheet_logger.log_trade(
+                    action=g_action,
+                    symbol="SOXL/USDT:USDT",
+                    level=g_level,
+                    price=g_price,
+                    amount=g_qty,
+                    pnl=g_pnl,
+                    pnl_pct=g_pct,
+                    note=g_note
+                )
+            except Exception as e:
+                logger.warning(f"[ExcelLogger] 구글 시트 전송 예외 (로컬 엑셀 정상 보장): {e}")
+            # ----------------------------------------------------
 
             # 청산 이벤트이거나 자동 갱신 요청 시 손익차트 업데이트
             if auto_update_chart and event_type == "SELL_CLEAR":

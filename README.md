@@ -561,3 +561,18 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile utils/formatters.py manager/trader.py main.py` 구문 오류 0건 통과
   - `format_progress_single_track(1, 0, only_bar=True)` 단위 기능 테스트 정상 통과
   - 원격 EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 전송 및 `venv` 환경 구문 검증 완료
+
+## [2026-10-22 21:56] 업데이트 이력 (Commit ID: 4abfee8)
+- **수정 내용**:
+  - **구글 스프레드시트 비동기 Webhook 체결 로거 신규 구현 (`sheets_logger.py`)**:
+    - Google Apps Script Webhook URL로 매수/매도/더미 체결 데이터(`log_trade`) 및 일별 자산 스냅샷(`log_snapshot`) 전송 모듈 구축
+    - 3초 타임아웃 및 try...except 예외 격리를 적용하여 네트워크 지연이나 구글 API 응답 지연 시에도 기존 매매 루프 및 로컬 엑셀 원장 저장 완벽 보장
+    - `strategy_name="v3-switch"`, `exchange="Bitget"` 기본값 연동
+  - **로컬 엑셀 원장 기록 시 구글 시트 자동 동기화 (`utils/excel_logger.py`)**:
+    - `ExcelLogger.append_history()` 내부에서 로컬 엑셀 저장 직후 `sheet_logger.log_trade()` 호출 연동
+    - 이벤트 유형(`BUY`, `BUY_DUMMY`, `SELL`), 체결가, 수량, 실현손익(USD), 수익률(%), 차수 라벨(`{strategy_name} {unit_label}`), 비고(`[{dummy_status}] {note}`) 정규화 매핑 전송
+    - 전송 실패 시에도 경고 로그만 남기고 로컬 엑셀 무결성 보장
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py utils/excel_logger.py main.py` 구문 오류 0건 통과
+  - 원격 EC2 실서버(`/var/autobot/bitget_v3_switch`) 파일 전송(`scp`) 및 가상환경 문법 검증 통과
+
