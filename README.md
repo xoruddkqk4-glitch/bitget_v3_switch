@@ -533,4 +533,20 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile utils/formatters.py` 구문 오류 0건 통과
   - 설정값 확인: `UNIT_DIVISOR=15.0, MAX_EXECUTED_UNITS=13, WEIGHTED_UNIT_THRESHOLD=4, WEIGHT_NORMAL=1.0, WEIGHT_BOOST=1.25`
 
+## [2026-10-22 10:10] 업데이트 이력 (Commit ID: ead0a03)
+- **수정 내용**:
+  - **2단계 트레일링 돌입 시 최소 이익 보존선(base_price) 기준 개선 (`manager/trader.py`)**:
+    - 기존 수식 목표가(`target_price`) 대신, 1차 조건 충족 시점의 실제 체결 가능 시장가(`current_price`)를 반영하도록 보존선 산출 로직 개편
+    - **롱 (Strategy A):** `effective_base = max(current_price, target_price)` (밤새 갭상승 시 오리지널 매도 가격을 하한선으로 확보)
+    - **숏 (Strategy B):** `effective_base = min(current_price, target_price)` (밤새 급락 시 오리지널 숏 매도 가격을 상한선으로 확보)
+    - 2단계 추세 감시 중 주가가 1차 매도가(버퍼 0.2%) 아래로 꺾일 경우 즉시 시장가 방어 매도가 발동되어 오리지널 수익을 100% 온전하게 지키는 비대칭 수익 구조 확립
+  - **일봉 재평가 래칫(Ratchet) 갱신 시 시장가 반영 (`manager/trader.py`)**:
+    - 트레일링 진행 중 다음날 아침 일봉 마감 재평가 시에도 신규 보존선 후보에 `candidate_base = max(current_price, target_price)` (롱) / `min(...)` (숏)을 적용하여 유리한 방향으로 래칫 갱신 연동
+- **검증 결과**:
+  - `python -m py_compile manager/trader.py main.py` 구문 오류 0건 통과
+  - 롱/숏 단위 로직 시뮬레이션:
+    1. 롱 진입 시: 목표가 $100.10 대비 현재가 $106.17 -> 보존선 `$106.17` 정상 산출 (PASS)
+    2. 숏 진입 시: 목표가 $98.16 대비 현재가 $95.00 -> 보존선 `$95.00` 정상 산출 (PASS)
+
+
 

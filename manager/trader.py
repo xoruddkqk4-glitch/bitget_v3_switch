@@ -210,7 +210,8 @@ class Trader:
         # 2단계 트레일링 진행 중: 재돌입/즉시청산 없이 보존선을 유리한 방향으로만 갱신 (래칫)
         if state.get("trailing_mode", False):
             self._handle_trailing_ratchet(
-                strategy_name, exit_met, action, exit_reason, target_price, date_str, execution_logs
+                strategy_name, exit_met, action, exit_reason, target_price, date_str, execution_logs,
+                current_price=current_price
             )
             return False
 
@@ -220,14 +221,17 @@ class Trader:
 
         if action == "ENTER_STAGE2":
             # 상승장/과낙폭(과반등) 익절: 즉시 청산하지 않고 2단계 4H 5MA 감시 모드 활성화
+            # 보존선(base_price)은 수식 목표가(target_price)와 당시 실제 체결 가능 가격(current_price) 중
+            # 더 유리한 가격(롱: max, 숏: min)을 기준으로 설정하여, 오리지널 청산 시점의 수익을 하한선으로 방어
+            effective_base = max(current_price, target_price) if cfg["direction"] > 0 else min(current_price, target_price)
             self.cycles.set_trailing_mode(
                 strategy_name=strategy_name,
                 target_price=target_price,
-                base_price=target_price,
+                base_price=effective_base,
                 reason=exit_reason,
                 date_str=date_str
             )
-            execution_logs.append(f"🟡 [{label} 2단계 트레일링 돌입] {exit_reason} (최소보존선: ${target_price:,.2f})")
+            execution_logs.append(f"🟡 [{label} 2단계 트레일링 돌입] {exit_reason} (최소보존선: ${effective_base:,.2f})")
             return False
 
         if action == "IMMEDIATE_EXIT":
@@ -254,11 +258,12 @@ class Trader:
         exit_reason: str,
         target_price: float,
         date_str: str,
-        execution_logs: List[str]
+        execution_logs: List[str],
+        current_price: float = 0.0
     ):
         """
         트레일링 감시 중 일봉 재평가 처리:
-        - ENTER_STAGE2 신규 목표가가 기존 보존선보다 유리할 때만 보존선 갱신 (롱 상향 / 숏 하향)
+        - ENTER_STAGE2 신규 목표가/현재가가 기존 보존선보다 유리할 때만 보존선 갱신 (롱 상향 / 숏 하향)
         - IMMEDIATE_EXIT / NONE / 불리한 목표가는 무시 (보존선 유지, 청산은 4H 감시가 담당)
         """
         cfg = SIDE_CFG[strategy_name]
@@ -267,12 +272,16 @@ class Trader:
             logger.info(f"[Trader] [{strategy_name}] {label} 트레일링 감시 중 - 일봉 재평가 결과 무시 ({action}: {exit_reason})")
             return
 
+        candidate_base = (
+            max(current_price, target_price) if cfg["direction"] > 0 else min(current_price, target_price)
+        ) if current_price > 0 else target_price
+
         improved, old_base, new_base = self.cycles.ratchet_trailing_base(
-            strategy_name, target_price, exit_reason, date_str
+            strategy_name, candidate_base, exit_reason, date_str
         )
         if not improved:
             logger.info(
-                f"[Trader] [{strategy_name}] {label} 보존선 유지 (기존 ${old_base:,.2f}, 신규 후보 ${target_price:,.2f} - 불리한 방향)"
+                f"[Trader] [{strategy_name}] {label} 보존선 유지 (기존 ${old_base:,.2f}, 신규 후보 ${candidate_base:,.2f} - 불리한 방향)"
             )
             return
 
