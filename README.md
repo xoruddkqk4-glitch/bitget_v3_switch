@@ -611,4 +611,21 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 당일 청산 상태에서의 메시지 렌더링 단위 테스트 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 venv 환경 구문 검증 완료
 
+## [2026-10-23 21:28] 업데이트 이력 (Commit ID: 72dd29b)
+- **수정 내용**:
+  - **구글 스프레드시트 비동기 로거 HTTP 커넥션 풀링(Connection Pooling) 적용 (`sheets_logger.py`)**:
+    - `requests.Session()` 인스턴스를 도입하여 매 Webhook 호출 시마다 발생하던 TCP 3-Way Handshake 및 TLS 핸드셰이크 오버헤드 제거
+    - 체결 기록(`log_trade`) 및 스냅샷(`log_snapshot`) 전송 지연 시간 대폭 단축
+  - **봇 내부 상태 비동기 동기화 메서드 구현 (`sheets_logger.py`)**:
+    - `log_bot_state(state_data, strategy_name)` 메서드 신규 추가: 쿨링다운, 공백 예약, 잔고부족 차수 등 봇 내부 상태를 대시보드/구글 시트로 안전하게 비동기 전송
+    - 타임아웃(2초) 및 개별 try...except 예외 격리를 통해 전송 실패 시에도 메인 매매 루프 완벽 보장
+  - **대용량 원장 데이터 관리 및 속도 최적화를 위한 원격 관리/진단 기능 확장 (`sheets_logger.py`)**:
+    - `trigger_monthly_archive(min_retain_rows, target_month)`: 원장 월별 탭 자동 아카이브 원격 실행
+    - `trigger_yearly_sharding(target_year)`: 원장 연도별 파일 분리(샤딩) 원격 실행
+    - `diagnose_capacity()`: 원장 용량 및 건강도 진단 원격 조회
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py utils/excel_logger.py main.py` 전 파일 구문 컴파일 오류 0건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 원격 가상환경 문법 검증 완료
+
+
 

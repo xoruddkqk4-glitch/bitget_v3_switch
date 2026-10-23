@@ -44,6 +44,7 @@ class SheetsLogger:
         self.exchange = exchange
         self.timeout = timeout
         self.silent = silent
+        self._session = requests.Session() if requests is not None else None
 
     def log_trade(
         self,
@@ -101,7 +102,8 @@ class SheetsLogger:
         }
 
         try:
-            resp = requests.post(
+            http_client = self._session or requests
+            resp = http_client.post(
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
@@ -161,7 +163,8 @@ class SheetsLogger:
         }
 
         try:
-            resp = requests.post(
+            http_client = self._session or requests
+            resp = http_client.post(
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
@@ -173,7 +176,111 @@ class SheetsLogger:
                 print(f"[{self.strategy_name}] 스냅샷 전송 실패: {e}")
             return False
 
+    def log_bot_state(self, state_data: Dict[str, Any], strategy_name: Optional[str] = None) -> bool:
+        """
+        EC2 봇의 내부 상태(쿨링다운, 공백 예약, 잔고부족 차수 등)를 구글 시트/대시보드로 비동기 전송
+        - 타임아웃 2초 및 예외 격리로 메인 매매 루프 완벽 보장
+        """
+        if not self.webhook_url or requests is None:
+            return False
+
+        payload = {
+            "token": self.auth_token,
+            "type": "STATE_SYNC",
+            "strategy_name": strategy_name or self.strategy_name,
+            "timestamp": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "data": state_data
+        }
+
+        try:
+            http_client = self._session or requests
+            resp = http_client.post(
+                self.webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            if not self.silent:
+                print(f"[{self.strategy_name}] 봇 상태 전송 지연/오류 (매매 정상 지속): {e}")
+            return False
+
+    def trigger_monthly_archive(self, min_retain_rows: int = 500, target_month: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        [옵션 1] 원장 월별 탭 자동 아카이브 원격 실행
+        """
+        if not self.webhook_url or requests is None:
+            return None
+        payload = {
+            "token": self.auth_token,
+            "type": "ARCHIVE_MONTHLY",
+            "data": {
+                "options": {
+                    "minRetainRows": min_retain_rows,
+                    "targetMonth": target_month
+                }
+            }
+        }
+        try:
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except Exception as e:
+            if not self.silent:
+                print(f"[{self.strategy_name}] 월별 아카이브 요청 실패: {e}")
+            return None
+
+    def trigger_yearly_sharding(self, target_year: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        [옵션 4] 원장 연도별 파일 분리 (샤딩) 원격 실행
+        """
+        if not self.webhook_url or requests is None:
+            return None
+        payload = {
+            "token": self.auth_token,
+            "type": "SHARD_YEARLY",
+            "data": {
+                "year": target_year
+            }
+        }
+        try:
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except Exception as e:
+            if not self.silent:
+                print(f"[{self.strategy_name}] 연도별 샤딩 요청 실패: {e}")
+            return None
+
+    def diagnose_capacity(self) -> Optional[Dict[str, Any]]:
+        """
+        원장 용량 및 건강도 진단 원격 조회
+        """
+        if not self.webhook_url or requests is None:
+            return None
+        payload = {
+            "token": self.auth_token,
+            "type": "DIAGNOSE",
+            "data": {}
+        }
+        try:
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except Exception as e:
+            if not self.silent:
+                print(f"[{self.strategy_name}] 원장 용량 진단 실패: {e}")
+            return None
+
 
 if __name__ == "__main__":
     print("SheetsLogger 모듈 정상 로드 완료.")
     print("사용법: from sheets_logger import SheetsLogger")
+
