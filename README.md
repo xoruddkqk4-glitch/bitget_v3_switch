@@ -597,4 +597,18 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/trader.py main.py` 구문 검증 완료 (오류 0건)
   - 롱/숏 단위 로직 시뮬레이션(고수익 시 `ENTER_STAGE2`, 본탈 구간 시 `IMMEDIATE_EXIT`) 검증 통과 (4건 모두 통과)
 
+## [2026-10-23 09:55] 업데이트 이력 (Commit ID: bb01fe2)
+- **수정 내용**:
+  - **단독 청산 알림 즉시 발송 (`manager/trader.py`)**:
+    - 1차 일봉 마감 청산 및 2차 트레일링 청산 구분 없이, 포지션 전량 청산 완료 즉시 `🎉 [Bitget V3 Switch {label} {익절/본탈/손절} 청산 보고]` 단독 알림 텔레그램 발송 추가
+    - 체결 일시, 종목, 청산 사유, 체결 상세(수량, 체결가, 수수료), 확정 손익(USD, %), 계좌 총 잔고 정보 포함
+  - **일봉 종합 보고서 청산 실적 최우선 강조 포맷 개선 (`main.py`, `manager/trader.py`)**:
+    - 당일 청산 발생 시 진입 평가 신호에 덮어씌워져 `관망 (신호 미발생)`으로 묻히던 현상을 해결하고, 헤드라인에 `🔴 전략 B (숏): [익절 청산 완료] (+21.44%)`가 최우선 표기되도록 로직 개선
+    - 청산 완료 당일 신규 진입 신호 발생 시 `[익절 청산 완료] (+21.44%) → 더미 1차 이관 (1/2)`로 청산 실적이 선두에 표기되도록 지원
+    - 상단 `🔥 [핵심 지표]`의 평가손익 항목에 `숏 익절완료 (+31.34 USD, +21.44%)`, 하단 `📦 [보유 현황]`에 `미보유 (당일 익절 청산 완료)` 명시
+- **검증 결과**:
+  - `python -m py_compile main.py manager/trader.py` 구문 검증 완료 (오류 0건)
+  - 당일 청산 상태에서의 메시지 렌더링 단위 테스트 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 venv 환경 구문 검증 완료
+
 

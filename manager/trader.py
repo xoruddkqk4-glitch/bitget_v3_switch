@@ -310,6 +310,14 @@ class Trader:
                 target_price=target_price
             )
             execution_logs.append(log_msg)
+            if closed:
+                eval_data = self.last_eval.get(strategy_name, {})
+                pnl_usd = eval_data.get("cleared_pnl_usd", 0.0)
+                pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
+                fill_str = f"${eval_data.get('cleared_price', current_price):,.2f}"
+                self.last_eval[strategy_name]["exit_reason"] = (
+                    f"목표가 도달 → 즉시 전량 청산 완료 (체결가 {fill_str}, 확정손익 {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
+                )
             return closed
 
         return False
@@ -452,7 +460,7 @@ class Trader:
             self.notifier.send_message(f"<b>⚠️ [Bitget V3 Switch 부분 청산 경보]</b>\n• {self._escape(msg)}")
             return False, msg
 
-        # 4) 전량 청산: 엑셀 기록 → 싸이클 초기화
+        # 4) 전량 청산: 엑셀 기록 → 싸이클 초기화 → 단독 청산 알림 즉시 발송
         self.excel.append_record(
             date_str=date_str,
             strategy_name=strategy_name,
@@ -471,6 +479,30 @@ class Trader:
             f"{cfg['emoji']} [{log_title}] {reason} (체결가: ${fill_price:,.2f}, 수량: {filled:,.4f}, "
             f"확정손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
         )
+
+        pnl_type = "익절" if pnl_usd > 0 else ("손절" if pnl_usd < 0 else "본탈")
+        pnl_emoji = "🎉" if pnl_usd > 0 else ("⚪" if pnl_usd == 0 else "⚠️")
+        self.last_eval[strategy_name]["cleared"] = True
+        self.last_eval[strategy_name]["cleared_type"] = pnl_type
+        self.last_eval[strategy_name]["cleared_pnl_usd"] = pnl_usd
+        self.last_eval[strategy_name]["cleared_pnl_pct"] = pnl_pct
+        self.last_eval[strategy_name]["cleared_qty"] = filled
+        self.last_eval[strategy_name]["cleared_price"] = fill_price
+
+        stage_tag = "2단계 " if "2단계" in log_title else ""
+        kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+        unit_base = self.last_total_balance / UNIT_DIVISOR
+        close_notif = (
+            f"<b>{pnl_emoji} [Bitget V3 Switch {stage_tag}{label} {pnl_type} 청산 보고]</b>\n\n"
+            f"• <b>체결 일시:</b> {kst_str}\n"
+            f"• <b>종목:</b> {self.client.symbol}\n"
+            f"• <b>청산 사유:</b> {self._escape(reason)}\n"
+            f"• <b>체결 상세:</b> {filled:,.4f} Qty @ ${fill_price:,.2f} (수수료 ${result.fee:,.4f})\n"
+            f"• <b>확정 손익:</b> <b>{pnl_usd:+,.2f} USD ({pnl_pct:+.2f}%)</b>\n"
+            f"• <b>계좌 잔고:</b> ${self.last_total_balance:,.2f} (1.0 Unit: ${unit_base:,.2f})"
+        )
+        self.notifier.send_message(close_notif)
+
         return True, msg
 
     def _evaluate_entry(
@@ -507,14 +539,29 @@ class Trader:
         )
         if not entry_met:
             logger.info(f"[Trader] [{strategy_name}] {label} 진입 신호 없음: {entry_reason}")
-            action_title = "포지션 유지 (매매 없음)" if total_qty > 0 else "관망 (신호 미발생)"
-            action_detail = f"기존 포지션({total_qty:,.4f} Qty) 홀딩 유지" if total_qty > 0 else "포지션 미보유 유지"
-            self._set_eval(
-                strategy_name, False, "NO_SIGNAL", entry_reason, f"⚪ 조건 미충족 ({entry_reason})",
-                entry_reason=entry_reason,
-                action_title=action_title,
-                action_detail=action_detail
-            )
+            if cleared_today:
+                eval_data = self.last_eval.get(strategy_name, {})
+                cleared_type = eval_data.get("cleared_type", "청산")
+                pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
+                pnl_usd = eval_data.get("cleared_pnl_usd", 0.0)
+                action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%)"
+                action_detail = f"당일 전량 청산({pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%) 완료 후 포지션 미보유 유지"
+                self._set_eval(
+                    strategy_name, False, "CLEARED_NO_ENTRY", entry_reason,
+                    f"🎉 {action_title} ({entry_reason})",
+                    entry_reason=entry_reason,
+                    action_title=action_title,
+                    action_detail=action_detail
+                )
+            else:
+                action_title = "포지션 유지 (매매 없음)" if total_qty > 0 else "관망 (신호 미발생)"
+                action_detail = f"기존 포지션({total_qty:,.4f} Qty) 홀딩 유지" if total_qty > 0 else "포지션 미보유 유지"
+                self._set_eval(
+                    strategy_name, False, "NO_SIGNAL", entry_reason, f"⚪ 조건 미충족 ({entry_reason})",
+                    entry_reason=entry_reason,
+                    action_title=action_title,
+                    action_detail=action_detail
+                )
             return
 
         logger.info(f"[Trader] [{strategy_name}] {label} 진입 신호 발생: {entry_reason}")
@@ -535,11 +582,16 @@ class Trader:
             )
             bar = format_progress_single_track(1, 0, include_counts=False)
             execution_logs.append(f"🟡 [{label} 1차 더미 이관] 당일 청산으로 신규 싸이클 1차 더미 진입: {bar}")
+            eval_data = self.last_eval.get(strategy_name, {})
+            cleared_type = eval_data.get("cleared_type", "청산")
+            pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
+            action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%) → 더미 1차 이관 (1/2)"
+            action_detail = f"당일 전량 청산 완료 후 신규 싸이클 1차 더미 방어 진입"
             self._set_eval(
                 strategy_name, True, "DUMMY_TRANSFERRED", entry_reason, f"🟡 1차 더미 이관 ({entry_reason})",
                 entry_reason=entry_reason,
-                action_title="더미 1차 진입 (당일 청산 이관)",
-                action_detail="당일 청산으로 신규 싸이클 1차 더미 진입"
+                action_title=action_title,
+                action_detail=action_detail
             )
             return
 
@@ -773,21 +825,7 @@ class Trader:
                 execution_logs.append(log_msg)
 
                 if closed:
-                    last_state = self.cycles.get_strategy_state(name)
-                    realized_pnl = last_state.get('last_realized_pnl', 0.0)
-                    realized_pct = last_state.get('last_realized_pct', 0.0)
-                    kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
-                    unit_base = self.last_total_balance / UNIT_DIVISOR
-                    msg = (
-                        f"<b>📊 [Bitget V3 Switch 2단계 {label} 청산 보고]</b>\n\n"
-                        f"• <b>기준 일시:</b> {kst_str}\n"
-                        f"• <b>종목:</b> {self.client.symbol}\n"
-                        f"• <b>계좌 총 평가 잔고:</b> ${self.last_total_balance:,.2f}\n"
-                        f"• <b>1.0 Unit 기본 금액:</b> ${unit_base:,.2f}\n"
-                        f"• <b>청산 내용:</b> {self._escape(log_msg)}\n"
-                        f"• <b>확정 수익금:</b> <b>{realized_pnl:+,.2f} USD ({realized_pct:+.2f}%)</b>"
-                    )
-                    self.notifier.send_message(msg)
+                    logger.info(f"[Trader 4H] [{name}] {label} 2단계 트레일링 청산 및 단독 알림 발송 완료")
             except OrderSkipError as e:
                 logger.warning(f"[Trader 4H] [{name}] {label} 2단계 청산 주문 스킵: {e}")
                 execution_logs.append(f"⚠️ [{label} 2단계 청산 주문 스킵] {e}")

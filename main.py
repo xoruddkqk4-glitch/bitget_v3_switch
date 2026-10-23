@@ -187,6 +187,9 @@ def run_pipeline() -> bool:
         trend_text = "상승" if indicators.get('is_sma60_rising') else "하락"
 
         # [전략 A - Long] 평가손익 및 실현손익
+        eval_a = trader.last_eval_a
+        eval_b = trader.last_eval_b
+
         qty_a = updated_state_a.get('total_qty', 0.0)
         avg_a = updated_state_a.get('avg_price', 0.0)
         if qty_a > 0 and avg_a > 0:
@@ -195,6 +198,13 @@ def run_pipeline() -> bool:
             pnl_str_a = f"<b>{pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)</b>"
             pos_line_a = f"{qty_a:,.4f} Qty (평단 ${avg_a:,.2f})"
             pos_summary_a = f"롱 {pnl_usd_a:+,.2f} USD ({pnl_pct_a:+.2f}%)"
+        elif eval_a.get("cleared"):
+            c_pnl_a = eval_a.get("cleared_pnl_usd", 0.0)
+            c_pct_a = eval_a.get("cleared_pnl_pct", 0.0)
+            c_type_a = eval_a.get("cleared_type", "청산")
+            pnl_str_a = "$0.00 USD (0.00%)"
+            pos_line_a = f"미보유 (당일 {c_type_a} 청산 완료)"
+            pos_summary_a = f"롱 {c_type_a}완료 ({c_pnl_a:+,.2f} USD, {c_pct_a:+.2f}%)"
         else:
             pnl_str_a = "$0.00 USD (0.00%)"
             pos_line_a = "미보유 (0.0000 Qty)"
@@ -214,6 +224,13 @@ def run_pipeline() -> bool:
             pnl_str_b = f"<b>{pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)</b>"
             pos_line_b = f"{qty_b:,.4f} Qty (평단 ${avg_b:,.2f})"
             pos_summary_b = f"숏 {pnl_usd_b:+,.2f} USD ({pnl_pct_b:+.2f}%)"
+        elif eval_b.get("cleared"):
+            c_pnl_b = eval_b.get("cleared_pnl_usd", 0.0)
+            c_pct_b = eval_b.get("cleared_pnl_pct", 0.0)
+            c_type_b = eval_b.get("cleared_type", "청산")
+            pnl_str_b = "$0.00 USD (0.00%)"
+            pos_line_b = f"미보유 (당일 {c_type_b} 청산 완료)"
+            pos_summary_b = f"숏 {c_type_b}완료 ({c_pnl_b:+,.2f} USD, {c_pct_b:+.2f}%)"
         else:
             pnl_str_b = "$0.00 USD (0.00%)"
             pos_line_b = "미보유 (0.0000 Qty)"
@@ -238,16 +255,25 @@ def run_pipeline() -> bool:
         unit_info_b = f"헤지(숏) ${hedge_unit_usd:,.0f}" if qty_a > 0 else f"단일(숏) ${unit_base_usd:,.0f}"
         unit_line = f"{unit_info_a} / {unit_info_b}"
 
-        # 당일 전략별 판단 결과 (진입 -> 청산 -> 조치 순서 통일)
-        eval_a = trader.last_eval_a
-        eval_b = trader.last_eval_b
-
-        action_title_a = escape_tg(eval_a.get("action_title") or ("더미 진입 완료" if eval_a.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_a > 0 else "관망 (신호 미발생)")))
+        # 당일 전략별 판단 결과 (진입 -> 청산 -> 조치 순서 통일, 당일 청산 시 최우선 강조)
+        if eval_a.get("cleared"):
+            c_type_a = eval_a.get("cleared_type", "청산")
+            c_pct_a = eval_a.get("cleared_pnl_pct", 0.0)
+            default_title_a = f"[{c_type_a} 청산 완료] ({c_pct_a:+.2f}%)"
+        else:
+            default_title_a = "더미 진입 완료" if eval_a.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_a > 0 else "관망 (신호 미발생)")
+        action_title_a = escape_tg(eval_a.get("action_title") or default_title_a)
         entry_reason_a = escape_tg(eval_a.get("entry_reason") or eval_a.get("reason") or "진입 조건 정보 없음")
         exit_reason_a = escape_tg(eval_a.get("exit_reason") or ("미보유 (해당 없음)" if qty_a <= 0 else "청산 조건 미충족"))
         action_detail_a = escape_tg(eval_a.get("action_detail") or ("포지션 미보유 유지" if qty_a <= 0 else f"기존 포지션({qty_a:,.4f} Qty) 홀딩 유지"))
 
-        action_title_b = escape_tg(eval_b.get("action_title") or ("더미 진입 완료" if eval_b.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_b > 0 else "관망 (신호 미발생)")))
+        if eval_b.get("cleared"):
+            c_type_b = eval_b.get("cleared_type", "청산")
+            c_pct_b = eval_b.get("cleared_pnl_pct", 0.0)
+            default_title_b = f"[{c_type_b} 청산 완료] ({c_pct_b:+.2f}%)"
+        else:
+            default_title_b = "더미 진입 완료" if eval_b.get("status") == "DUMMY_CONSUMED" else ("포지션 유지 (매매 없음)" if qty_b > 0 else "관망 (신호 미발생)")
+        action_title_b = escape_tg(eval_b.get("action_title") or default_title_b)
         entry_reason_b = escape_tg(eval_b.get("entry_reason") or eval_b.get("reason") or "진입 조건 정보 없음")
         exit_reason_b = escape_tg(eval_b.get("exit_reason") or ("미보유 (해당 없음)" if qty_b <= 0 else "청산 조건 미충족"))
         action_detail_b = escape_tg(eval_b.get("action_detail") or ("포지션 미보유 유지" if qty_b <= 0 else f"기존 포지션({qty_b:,.4f} Qty) 홀딩 유지"))
