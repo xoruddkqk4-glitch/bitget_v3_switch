@@ -15,7 +15,8 @@ from config import (
     LONG_EXIT_FALLING_SMA_DEEP,
     BREAKEVEN_GUARD_ENABLED,
     BREAKEVEN_GUARD_MIN_PCT,
-    STAGE2_SIGNAL_MODE
+    STAGE2_SIGNAL_MODE,
+    HYBRID_TRAILING_MIN_PNL_PCT
 )
 
 
@@ -81,19 +82,40 @@ class StrategyALong(BaseStrategy):
             return is_met, action, reason, target_price
         else:
             if drawdown_rate > DRAWDOWN_THRESHOLD:
-                # 완만한 하락장: 본전 탈출 (2단계 없이 즉시 청산)
+                # 완만한 하락장: 목표가 도달 시 스마트 하이브리드 익절/본탈 판정
                 target_price = sma5 * LONG_EXIT_FALLING_SMA_MILD
                 is_met = current_price >= target_price
-                action = "IMMEDIATE_EXIT" if is_met else "NONE"
-                reason = f"60일선 하락장 & 낙폭률({drawdown_rate*100:.1f}% > -30%): 현재가 ≥ SMA5*0.99 목표가(${target_price:,.2f}) 회복 → 즉시 본탈"
-                if is_met and BREAKEVEN_GUARD_ENABLED:
-                    avg_price = float(cycle_info.get('avg_price', 0.0) or 0.0)
+                if not is_met:
+                    return False, "NONE", f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 현재가 < SMA5*0.99 목표가(${target_price:,.2f})", target_price
+
+                avg_price = float(cycle_info.get('avg_price', 0.0) or 0.0)
+                current_pnl_pct = ((current_price / avg_price) - 1.0) * 100.0 if avg_price > 0 else 0.0
+
+                # 스마트 하이브리드 익절: 수익률이 기준치 이상이면 2단계 트레일링으로 추세 추종
+                if current_pnl_pct >= HYBRID_TRAILING_MIN_PNL_PCT:
+                    action = "ENTER_STAGE2"
+                    reason = (
+                        f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 현재가 ≥ SMA5*0.99 목표가(${target_price:,.2f}) 회복 "
+                        f"& 고수익 달성({current_pnl_pct:+.2f}% >= +{HYBRID_TRAILING_MIN_PNL_PCT:.1f}%) → 2단계 4H 5MA 감시 돌입"
+                    )
+                    return True, action, reason, target_price
+
+                # 본전 가드 (선택 옵션)
+                if BREAKEVEN_GUARD_ENABLED:
                     guard_price = avg_price * (1.0 + BREAKEVEN_GUARD_MIN_PCT)
                     if avg_price > 0 and current_price < guard_price:
                         return False, "NONE", (
-                            f"{reason} | 본전 가드 미달(현재가 ${current_price:,.2f} < 평단×{1.0 + BREAKEVEN_GUARD_MIN_PCT:.3f} ${guard_price:,.2f}) → 보유 유지"
+                            f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 현재가 ≥ SMA5*0.99 목표가(${target_price:,.2f}) 회복 | "
+                            f"본전 가드 미달(현재가 ${current_price:,.2f} < 평단×{1.0 + BREAKEVEN_GUARD_MIN_PCT:.3f} ${guard_price:,.2f}) → 보유 유지"
                         ), target_price
-                return is_met, action, reason, target_price
+
+                # 수익률 기준치 미만인 경우: 기존대로 안전 즉시 본탈
+                action = "IMMEDIATE_EXIT"
+                reason = (
+                    f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 현재가 ≥ SMA5*0.99 목표가(${target_price:,.2f}) 회복 "
+                    f"(수익률 {current_pnl_pct:+.2f}% < +{HYBRID_TRAILING_MIN_PNL_PCT:.1f}%) → 즉시 본탈"
+                )
+                return True, action, reason, target_price
             else:
                 # 깊은 하락장: 반등 익절 (2단계 감시)
                 target_price = sma5 * LONG_EXIT_FALLING_SMA_DEEP

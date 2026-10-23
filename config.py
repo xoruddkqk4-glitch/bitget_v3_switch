@@ -46,6 +46,7 @@ DAILY_EVAL_START_MIN = 10      # 일봉 마감 평가 시작 분 (09:10 KST)
 DAILY_EVAL_END_MIN = 15        # 일봉 마감 평가 종료 분 (09:15 KST)
 PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
 STAGE2_SIGNAL_MODE = "closed_candle"  # 2단계 4H 5MA 이탈 판정: "closed_candle"(마감된 4H 완성봉 종가, 권장) | "realtime"(진행 중 캔들 실시간가)
+HYBRID_TRAILING_MIN_PNL_PCT = 5.0     # 완만한 장세 본탈 조건 도달 시 수익률(%) 이상이면 2단계 트레일링 익절로 승격 (+5.0%)
 
 TAKER_FEE_RATE = 0.0006
 ORDER_CONFIRM_RETRY_DELAYS = (0.5, 1.0, 2.0)

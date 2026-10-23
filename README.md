@@ -586,3 +586,15 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 venv 환경 구문 검증 완료
   - EC2 crontab 5분 틱 감시 정상 구동 확인
 
+## [2026-10-23 09:48] 업데이트 이력 (Commit ID: e6a77dd)
+- **수정 내용**:
+  - **스마트 하이브리드 익절 기능 도입 (`config.py`, `strategy/strategy_a_long.py`, `strategy/strategy_b_short.py`)**:
+    - 완만한 장세 본전 탈출 조건(숏: 60일선 하락장 & 반등폭 < 30%의 SMA5*1.01 도달 / 롱: 60일선 하락장 & 낙폭률 > -30%의 SMA5*0.99 회복)에서 무조건 즉시 전량 청산하던 기존 로직 개선
+    - `HYBRID_TRAILING_MIN_PNL_PCT = 5.0` 설정 상수를 추가하여, 목표가 도달 시점의 미실현 수익률이 +5.0% 이상인 경우 즉시 청산하지 않고 `ENTER_STAGE2`(2단계 4시간봉 5MA 트레일링 감시)로 승격하여 추가 추세 익절을 극대화하도록 개선
+    - 수익률이 +5.0% 미만인 본전/약수익 구간에서는 기존대로 `IMMEDIATE_EXIT`를 실행하여 슬리피지 및 반등 위험 없는 안전 본탈 보장
+    - 롱(A)과 숏(B) 양방향 대칭 적용 완료
+- **검증 결과**:
+  - `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/trader.py main.py` 구문 검증 완료 (오류 0건)
+  - 롱/숏 단위 로직 시뮬레이션(고수익 시 `ENTER_STAGE2`, 본탈 구간 시 `IMMEDIATE_EXIT`) 검증 통과 (4건 모두 통과)
+
+
