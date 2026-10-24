@@ -51,3 +51,9 @@
 ## 6. `/scratchpad` 브라우저 검증 전용 모드 정책 (Visual Verification Explicit Exception)
 - 사용자로부터 `/scratchpad`, `/action scratchpad`, 또는 "scratchpad로 검증해줘"라는 명시적인 요청을 수신하는 경우, Rule 1 정책의 명시적 예외를 적용합니다.
 - Scratchpad 및 브라우저 검증 도구(`browser_subagent`)를 활용하여 대상 페이지 및 UI 인터액션 기능을 시각적으로 직접 확인하고 결과를 사용자에게 보고합니다.
+
+## 7. `/apply` 계획서 즉시 적용 모드 정책 (Plan Execution Mode)
+- 사용자로부터 `/apply`, `/action apply` 명령을 수신하면, 직전 `/ask` 모드나 아티팩트로 작성된 `implementation_plan.md` 계획서의 내용을 확인하고 소스 코드에 즉시 단계별로 반영합니다.
+- '반영해줘' 등의 자연어 승인 문구 없이도 `/apply` 명령어 하나로 즉시 구현을 시작합니다.
+- 코드 수정 후에는 Rule 2에 따라 빠른 터미널 정적 검증을 수행하고 결과를 보고합니다.
+- 단, Rule 3/4에 따라 자동 커밋 및 푸시는 진행하지 않으며 명시적인 `/git-commit` 수신 시에만 커밋/푸시를 수행합니다.

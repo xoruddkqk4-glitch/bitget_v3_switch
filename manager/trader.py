@@ -204,6 +204,15 @@ class Trader:
                 continue
             try:
                 cleared_today[name] = self._evaluate_stage1_exit(name, indicators, date_str, execution_logs)
+                if self.last_eval.get(name, {}).get("partial_close"):
+                    # 부분 청산 진행 중: 잔량이 남아 있으므로 당일 추가 진입 금지 (다음 실행에서 청산 재평가)
+                    failed.add(name)
+                    self._set_eval(
+                        name, False, "EXIT_PARTIAL", "부분 청산 진행 중", "⚠️ 부분 청산 진행 중 (진입 스킵)",
+                        exit_reason="부분 청산 진행 중 (잔량 유지, 다음 실행에서 재평가)",
+                        action_title="부분 청산 (진입 스킵)",
+                        action_detail="잔량 청산 완료 전 추가 진입 차단"
+                    )
             except OrderSkipError as e:
                 logger.warning(f"[Trader] [{name}] {label} 청산 주문 스킵: {e}")
                 execution_logs.append(f"⚠️ [{label} 청산 주문 스킵] {e}")
@@ -458,6 +467,7 @@ class Trader:
                 f"(체결가 ${fill_price:,.2f}, 손익 {pnl_usd:+,.2f} USD) - 잔량 유지, 다음 실행에서 재평가"
             )
             self.notifier.send_message(f"<b>⚠️ [Bitget V3 Switch 부분 청산 경보]</b>\n• {self._escape(msg)}")
+            self.last_eval.setdefault(strategy_name, {})["partial_close"] = True   # 당일 추가 진입 차단용 플래그
             return False, msg
 
         # 4) 전량 청산: 엑셀 기록 → 싸이클 초기화 → 단독 청산 알림 즉시 발송
@@ -502,6 +512,12 @@ class Trader:
             f"• <b>계좌 잔고:</b> ${self.last_total_balance:,.2f} (1.0 Unit: ${unit_base:,.2f})"
         )
         self.notifier.send_message(close_notif)
+
+        # 청산으로 늘어난 가용 잔고를 반영 (반대편 전략 헤지 유닛 산정용, 실패해도 청산 결과는 유지)
+        try:
+            self._refresh_balance()
+        except Exception as e:
+            logger.warning(f"[Trader] 청산 후 잔고 재조회 실패 (이전 잔고 값 유지): {e}")
 
         return True, msg
 
@@ -787,7 +803,11 @@ class Trader:
         indicators_4h = IndicatorCalculator.calculate_4h(df_4h)
         current_price = indicators_4h['current_price']
         date_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')   # 실제 청산 시각(KST)
-        self._refresh_balance()
+        try:
+            self._refresh_balance()
+        except Exception as e:
+            # 잔고는 표시/기록용이므로 조회 실패가 보존선 청산을 막아서는 안 됩니다.
+            logger.warning(f"[Trader 4H] 잔고 조회 실패 - 직전 잔고 값으로 감시를 계속합니다: {e}")
 
         for name in STRATEGY_NAMES:
             state = self.cycles.get_strategy_state(name)

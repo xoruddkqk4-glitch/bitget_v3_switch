@@ -127,9 +127,10 @@ def run_reconciliation(stage: str, throttle: bool) -> Dict[str, ReconcileResult]
     return results
 
 
-def run_pipeline() -> bool:
+def run_pipeline(force: bool = False) -> bool:
     """
-    일봉 마감 시점 통합 실행 파이프라인 (09:10~09:15 KST)
+    일봉 마감 시점 통합 실행 파이프라인 (09:10~09:30 KST, 동일 완성봉은 1일 1회만 평가)
+    force=True: 이미 평가한 완성봉이어도 재평가 (--run-once --force 전용)
     0. state.json 무결성 확인
     1. 거래소 환경 점검/검증
     2. 일봉 OHLCV 수집 (실전 실패 시 중단)
@@ -165,8 +166,15 @@ def run_pipeline() -> bool:
             cycle_trough=state_b.get("cycle_trough", 0.0)
         )
 
+        # 4-1. 1일 1회 가드: 동일 완성봉으로 이미 평가했다면 매매 없이 종료 (더미/매수 이중 집행 방지)
+        eval_candle = indicators.get('candle_date', '')
+        if not force and cycle_manager.is_daily_evaluated(eval_candle):
+            logger.info(f"[Pipeline] 이미 평가 완료된 일봉({eval_candle}) - 중복 실행을 건너뜁니다. (재평가: --run-once --force)")
+            return True
+
         # 5. Trader 주문 집행 및 1차 청산 / 매수 평가
         logs = trader.process_daily_cycle(indicators, blocked=blocked)
+        cycle_manager.mark_daily_evaluated(eval_candle)
 
         # 6. 상태 요약 및 텔레그램 발송
         updated_state_a = cycle_manager.get_strategy_state("strategy_A")
@@ -282,7 +290,8 @@ def run_pipeline() -> bool:
         sync_status = escape_tg(format_reconcile_summary(recon_results))
         qty_a_str = f"{qty_a:,.4f}" if qty_a > 0 else "0"
         qty_b_str = f"{qty_b:,.4f}" if qty_b > 0 else "0"
-        sync_line = f"정상 (롱 {qty_a_str} / 숏 {qty_b_str} 일치)" if "OK" in sync_status else sync_status
+        all_synced = bool(recon_results) and all(r.status in ("OK", "SYNCED", "SKIPPED_PAPER") for r in recon_results.values())
+        sync_line = f"정상 (롱 {qty_a_str} / 숏 {qty_b_str} 일치)" if all_synced else sync_status
 
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 보고]</b>\n\n"
@@ -477,6 +486,7 @@ def run_test_order(side_key: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description="Bitget V3 Switch 2단계 스마트 트레일링 자동매매 파이프라인")
     parser.add_argument("--run-once", action="store_true", help="일봉 마감 파이프라인을 1회 즉시 실행하고 종료합니다.")
+    parser.add_argument("--force", action="store_true", help="--run-once와 함께 사용: 이미 평가한 일봉이어도 재평가합니다. (중복 매매 주의)")
     parser.add_argument("--cron", action="store_true", help="크론탭(3-59/5 * * * *) 5분 주기 틱을 1회 실행하고 종료합니다.")
     parser.add_argument("--stage2", action="store_true", help="4시간봉 2단계 트레일링 감시를 1회 즉시 실행하고 종료합니다.")
     parser.add_argument("--loop", action="store_true", help="5분 주기 상시 백그라운드 스케줄러로 구동합니다.")
@@ -516,10 +526,11 @@ def main():
         run_cron_tick()
         while True:
             time.sleep(300)
+            cycle_manager.reload()   # 수동 복구(--adopt-exchange) 등 디스크 변경 반영
             run_cron_tick()
     else:
         logger.info("[Main] --run-once 단일 일봉 실행 모드로 파이프라인을 시작합니다.")
-        success = run_pipeline()
+        success = run_pipeline(force=args.force)
         sys.exit(0 if success else 1)
 
 

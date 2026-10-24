@@ -243,6 +243,7 @@ class CycleManager:
                         data[strat].setdefault("last_realized_pnl", 0.0)
                         data[strat].setdefault("last_realized_pct", 0.0)
                         data[strat].setdefault("cumulative_realized_pnl", 0.0)
+                data.setdefault("last_daily_eval_candle", "")
                 return data
         except Exception as e:
             logger.error(f"[CycleManager] state.json 로드 실패, 기본 상태로 초기화합니다: {e}")
@@ -505,6 +506,20 @@ class CycleManager:
             f"${old_base:,.2f} → ${candidate_price:,.2f} ({reason}, {date_str})"
         )
         return True, old_base, float(candidate_price)
+
+    def is_daily_evaluated(self, candle_date: str) -> bool:
+        """해당 일봉 완성봉(candle_date)으로 이미 일봉 평가를 수행했는지 확인합니다. (일 1회 가드)"""
+        if not candle_date:
+            return False
+        return str(self.state.get("last_daily_eval_candle", "") or "") == str(candle_date)
+
+    def mark_daily_evaluated(self, candle_date: str):
+        """일봉 평가 완료한 완성봉 일시를 기록합니다."""
+        if not candle_date:
+            return
+        self.state["last_daily_eval_candle"] = str(candle_date)
+        self._save_state(self.state)
+        logger.info(f"[CycleManager] 일봉 평가 완료 기록: {candle_date}")
 
     def is_any_trailing_active(self) -> bool:
         """A 또는 B 전략 중 어느 하나라도 2단계 트레일링 감시 중인지 확인합니다."""

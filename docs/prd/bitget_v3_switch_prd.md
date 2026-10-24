@@ -23,19 +23,19 @@
 1. **양방향 헤지 동적 1.0 Unit 산출 수식:**
    $$\text{Current Unit Size (\$)} = 
    \begin{cases} 
-   \cfrac{\text{Free Margin (실시간 가용 잔고)}}{12.0}, & \text{if 상대편 포지션 보유 중 (양방향 헤지, opposite\_qty > 0)} \\[10pt]
-   \cfrac{\text{Total Balance (총 평가 잔고)}}{12.0}, & \text{if 상대편 포지션 없음 (단일 포지션, opposite\_qty = 0)}
+   \cfrac{\text{Free Margin (실시간 가용 잔고)}}{16.0}, & \text{if 상대편 포지션 보유 중 (양방향 헤지, opposite\_qty > 0)} \\[10pt]
+   \cfrac{\text{Total Balance (총 평가 잔고)}}{16.0}, & \text{if 상대편 포지션 없음 (단일 포지션, opposite\_qty = 0)}
    \end{cases}$$
    * 매 진입 시점마다 실시간 잔고를 조회하여 상대편 포지션 여부에 따라 기본 $ 금액을 동적으로 산출합니다.
    * **최소 주문금액 가드:** 주문금액이 최소 한도(`MIN_ORDER_USD = 5.0 USDT`) 미만일 경우 안전 스킵(Skip)합니다.
    * **가용 잔고 상한:** 1회 주문금액은 `가용 잔고 × 레버리지 × MARGIN_SAFETY_RATIO(0.95)`를 넘지 않도록 자동 축소합니다.
-   * **분모 12 근거:** 실제 매수 1~4회차(1.0x×4) + 5~10회차(1.25x×6) = 11.5 Unit 소요 → 12 분할 시 0.5 Unit 여유.
+   * **분모 16 근거:** 실제 매수 1~4회차(1.0x×4) + 5~13회차(1.25x×9) = 15.25 Unit 소요 → 16 분할 시 0.75 Unit 여유.
 
 2. **유닛 가중치 (더미 미포함 실제 매수 회차 기준):**
    * **더미 1~2회차:** $\$0$ (0원 매수, 더미 소진만 진행)
    * **실제 매수 1~4회차 (`executed_units`: 0~3):** $1.0 \times \text{Unit Size}$ (기본 1 유닛)
    * **실제 매수 5회차 이상 (`executed_units` $\ge 4$):** $1.25 \times \text{Unit Size}$ (비중 확대 유닛 적용)
-   * **최대 회차:** 싸이클당 실제 매수는 최대 10회차(`MAX_EXECUTED_UNITS = 10`)까지이며, 도달 후 신호는 `SKIPPED_MAX_UNITS`로 스킵합니다.
+   * **최대 회차:** 싸이클당 실제 매수는 최대 13회차(`MAX_EXECUTED_UNITS = 13`)까지이며, 도달 후 신호는 `SKIPPED_MAX_UNITS`로 스킵합니다.
 
 3. **더미(Dummy) 방어 시스템 및 미완성 더미 리셋:**
    * 새 싸이클 시작 후 진입 조건이 충족되더라도 **1~2회차 신호는 0원 매수(더미 소진)** 처리합니다.
@@ -89,7 +89,7 @@
 ```text
 bitget_v3_switch/
 ├── main.py                     # 일봉 마감 시점 통합 실행 파이프라인 엔트리 포인트
-├── config.py                   # API 키, 파라미터(12등분·최대 10회차, -1.5%, -3%, 60일선 배수 등) 설정
+├── config.py                   # API 키, 파라미터(16등분·최대 13회차, -1.5%, -3%, 60일선 배수 등) 설정
 ├── state.json                  # A/B 전략 각각의 더미/실제유닛 카운트, 평단가 영속성 저장 파일
 ├── trade_history.xlsx          # openpyxl 기반 매매/더미 내역 누적 기록 엑셀 파일 (자동 생성)
 │

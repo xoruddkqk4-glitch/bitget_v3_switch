@@ -43,7 +43,7 @@ POSITION_MODE = "hedge"        # 헤지 모드 (Long/Short 동시 독립 보유)
 # 2단계 트레일링 매도 및 스케줄링 설정
 DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 마감 평가 시간(KST)
 DAILY_EVAL_START_MIN = 10      # 일봉 마감 평가 시작 분 (09:10 KST)
-DAILY_EVAL_END_MIN = 15        # 일봉 마감 평가 종료 분 (09:15 KST)
+DAILY_EVAL_END_MIN = 30        # 일봉 마감 평가 종료 분 (09:30 KST, 실패 시 재시도 허용 / 중복은 last_daily_eval_candle 가드가 차단)
 PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
 STAGE2_SIGNAL_MODE = "closed_candle"  # 2단계 4H 5MA 이탈 판정: "closed_candle"(마감된 4H 완성봉 종가, 권장) | "realtime"(진행 중 캔들 실시간가)
 HYBRID_TRAILING_MIN_PNL_PCT = 5.0     # 완만한 장세 본탈 조건 도달 시 수익률(%) 이상이면 2단계 트레일링 익절로 승격 (+5.0%)
@@ -59,7 +59,7 @@ ALERT_COOLDOWN_SEC = 3600
 # ------------------------------------------------------------------------------
 # 3. 자금 관리 및 유닛 가중치 설정 (PRD 섹션 2)
 # ------------------------------------------------------------------------------
-UNIT_DIVISOR = 15.0            # 1.0 Unit = 기준 잔고 / 15 (보유금 추가에 따른 분할 매수 여력 확대)
+UNIT_DIVISOR = 16.0            # 1.0 Unit = 기준 잔고 / 16 (13회차 소요량 1.0x4 + 1.25x9 = 15.25 Unit + 0.75 Unit 여유)
 MAX_EXECUTED_UNITS = 13        # 싸이클당 실제 매수 최대 회차 (UNIT_DIVISOR와 분리된 독립 상한)
 MARGIN_SAFETY_RATIO = 0.95     # 1회 주문금액 상한 = 가용 잔고 × 레버리지 × 0.95 (증거금 부족 주문 거절 방지)
 MIN_ORDER_USD = 5.0            # Bitget 선물 최소 주문 가능 금액 ($5.0)
