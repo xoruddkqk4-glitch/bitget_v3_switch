@@ -103,13 +103,26 @@ class SheetsLogger:
         note: str = "",
         exchange: Optional[str] = None,
         currency: str = "USDT",
-        timestamp: Optional[str] = None
+        timestamp: Optional[str] = None,
+        trade_id: Optional[str] = None,
+        event: str = "",
+        side: str = "",
+        is_dummy: bool = False,
+        close_all: Optional[bool] = None
     ) -> bool:
         """
-        매수/매도/더미 체결 기록을 구글 시트 [통합_체결원장]으로 비동기 전송
+        매수/매도/더미 체결 기록을 구글 시트 [통합_체결원장]으로 전송
         - 기존 엑셀 원장 저장 직후에 호출하세요.
         - level: 매수/청산 차수 (예: '1차', '2차', '더미 1차', '본진 3차' 등)
         - 실패하더라도 False만 반환하고 메인 매매 루프는 절대 중단되지 않습니다.
+
+        선택 인자 (생략하면 기존과 동일하게 동작):
+        - trade_id: 같은 체결의 재전송을 서버가 걸러내는 ID. 생략하면 서버 중복 검사를 하지 않습니다.
+        - event: 봇 원본 이벤트명 (예: 'SELL_CLEAR_PARTIAL')
+        - side: 'LONG' / 'SHORT' / '' (양방향 전략용)
+        - is_dummy: 가상(더미) 체결 여부
+        - close_all: 전량 청산이면 True, 부분 청산이면 False, 해당 없으면 None
+        서버가 'duplicate' 로 응답하면 이미 기록된 체결이므로 성공(True)으로 취급합니다.
         """
         if not self.webhook_url:
             if not self.silent:
@@ -121,17 +134,15 @@ class SheetsLogger:
                 print(f"[{self.strategy_name}] SheetsLogger: requests 라이브러리가 설치되어 있지 않습니다. (pip install requests)")
             return False
 
-        now_str = timestamp or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            now_str = timestamp or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
-        payload = {
-            "token": self.auth_token,
-            "type": "TRADE",
-            "data": {
+            data = {
                 "timestamp": now_str,
                 "strategy_name": self.strategy_name,
                 "exchange": exchange or self.exchange,
                 "symbol": symbol,
-                "action": action.upper(),
+                "action": str(action).upper(),
                 "level": str(level),
                 "price": float(price),
                 "amount": float(amount),
@@ -142,9 +153,24 @@ class SheetsLogger:
                 "hold_time": str(hold_time),
                 "note": str(note)
             }
-        }
+            # 신규 선택 필드는 값이 있을 때만 포함 (구버전 서버와도 호환)
+            if trade_id:
+                data["trade_id"] = str(trade_id)
+            if event:
+                data["event"] = str(event)
+            if side:
+                data["side"] = str(side).upper()
+            if is_dummy:
+                data["is_dummy"] = True
+            if close_all is not None:
+                data["close_all"] = bool(close_all)
 
-        try:
+            payload = {
+                "token": self.auth_token,
+                "type": "TRADE",
+                "data": data
+            }
+
             http_client = self._session or requests
             resp = http_client.post(
                 self.webhook_url,
@@ -154,7 +180,7 @@ class SheetsLogger:
             )
             if resp.status_code == 200:
                 result = resp.json()
-                if result.get("status") == "success":
+                if result.get("status") in ("success", "duplicate"):
                     return True
                 else:
                     if not self.silent:
@@ -243,7 +269,13 @@ class SheetsLogger:
                 headers={"Content-Type": "application/json"},
                 timeout=self.timeout
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            # Apps Script 는 인증 실패에도 HTTP 200 을 돌려주므로 본문의 status 로 성공 여부를 판단
+            try:
+                return resp.json().get("status") == "success"
+            except Exception:
+                return False
         except Exception as e:
             if not self.silent:
                 print(f"[{self.strategy_name}] 봇 상태 전송 지연/오류 (매매 정상 지속): {e}")

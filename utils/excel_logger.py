@@ -3,6 +3,7 @@ utils/excel_logger.py
 openpyxl 기반 trade_history.xlsx 거래 및 더미 내역 누적 기록 및 손익차트(종합, V3+, V3-) 시각화 모듈 (PRD 섹션 5)
 """
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -57,6 +58,65 @@ COLUMNS = [
     "비고"
 ]
 
+
+# ---------------------------------------------------------------------
+# 구글 시트 전송용 보조 함수
+# ---------------------------------------------------------------------
+# 봇 이벤트 → (시트 action, is_dummy, close_all)
+#  - SELL_CLEAR_PARTIAL 은 부분 체결이므로 close_all=False (잔량이 남아 있는 상태, 전량 청산 아님)
+#  - RESET_DUMMY / TRAIL_RATCHET / SYNC_* 는 체결이 아니므로 포지션·손익 집계 대상에서 제외
+_SHEET_EVENT_MAP = {
+    "BUY_UNIT":           ("BUY",         False, None),
+    "BUY_DUMMY":          ("BUY_DUMMY",   True,  None),
+    "SELL_CLEAR":         ("SELL",        False, True),
+    "SELL_CLEAR_PARTIAL": ("SELL",        False, False),
+    "RESET_DUMMY":        ("RESET_DUMMY", True,  None),
+    "TRAIL_RATCHET":      ("INFO",        False, None),
+    "SYNC_RESET":         ("INFO",        False, None),
+    "SYNC_ADOPT":         ("INFO",        False, None),
+}
+
+
+def _map_sheet_event(event_type: str):
+    """이벤트명을 시트 규격으로 변환합니다. 알 수 없는 이벤트는 INFO 로 보내 집계 오염을 막습니다."""
+    ev = str(event_type or "").strip()
+    if ev in _SHEET_EVENT_MAP:
+        return _SHEET_EVENT_MAP[ev]
+    return ("INFO", False, None)
+
+
+def _side_from_strategy(strategy_name: str) -> str:
+    """strategy_A → LONG, strategy_B → SHORT (그 외는 빈 문자열)"""
+    name = str(strategy_name or "").lower()
+    if "strategy_a" in name or "v3+" in name:
+        return "LONG"
+    if "strategy_b" in name or "v3-" in name:
+        return "SHORT"
+    return ""
+
+
+_FEE_RE = re.compile(r"수수료:\s*\$?\s*([\d,]+(?:\.\d+)?)")
+
+
+def _extract_fee(note: str) -> float:
+    """비고 문자열의 '수수료: $0.1234' 값을 숫자로 추출합니다. 없으면 0."""
+    m = _FEE_RE.search(str(note or ""))
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
+def _make_trade_id(strategy_name, event_type, unit_label, date_str, price, qty, note) -> str:
+    """
+    같은 이벤트를 재전송해도 같은 ID 가 나오도록 결정적으로 생성합니다.
+    가격·수량이 없는 이벤트(더미, 보존선 갱신)는 비고 해시로 구분합니다.
+    """
+    note_digest = hashlib.sha1(str(note or "").encode("utf-8")).hexdigest()[:8]
+    raw = f"v3|{strategy_name}|{event_type}|{unit_label}|{date_str}|{price}|{qty}|{note_digest}"
+    return "v3-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 class ExcelLogger:
     """
@@ -213,13 +273,14 @@ class ExcelLogger:
             # ⬇️ [구글 시트 비동기 연동 추가] ⬇️
             # ----------------------------------------------------
             try:
-                # 이벤트 유형 정규화 (더미 매수는 BUY_DUMMY, 청산은 SELL, 매수는 BUY)
-                g_action = "BUY_DUMMY" if event_type == "BUY_DUMMY" else ("SELL" if "SELL" in event_type else "BUY")
+                # 이벤트 → 시트 전송 규격 매핑 (포지션 집계에 영향을 주는 이벤트와 정보성 이벤트를 분리)
+                g_action, g_is_dummy, g_close_all = _map_sheet_event(event_type)
+                g_side = _side_from_strategy(strategy_name)
                 g_price = float(price) if price and price > 0 else 0.0
                 g_qty = float(qty) if qty and qty > 0 else 0.0
                 g_pnl = float(realized_pnl) if realized_pnl is not None else 0.0
                 g_pct = float(pnl_pct) if pnl_pct is not None else 0.0
-                g_level = f"{strategy_name} {unit_label}"  # 예: V3+ 1Unit 또는 V3- 더미1차
+                g_level = f"{strategy_name} {unit_label}"  # 예: strategy_A 실제 1회차 (기존 형식 유지)
                 g_note = f"[{dummy_status}] {note}".strip()
                 sheet_logger.log_trade(
                     action=g_action,
@@ -227,9 +288,16 @@ class ExcelLogger:
                     level=g_level,
                     price=g_price,
                     amount=g_qty,
+                    fee=_extract_fee(note),
                     pnl=g_pnl,
                     pnl_pct=g_pct,
-                    note=g_note
+                    note=g_note,
+                    timestamp=str(date_str) if date_str else None,   # 엑셀 원장과 같은 시각으로 기록
+                    trade_id=_make_trade_id(strategy_name, event_type, unit_label, date_str, g_price, g_qty, note),
+                    event=event_type,
+                    side=g_side,
+                    is_dummy=g_is_dummy,
+                    close_all=g_close_all,
                 )
             except Exception as e:
                 logger.warning(f"[ExcelLogger] 구글 시트 전송 예외 (로컬 엑셀 정상 보장): {e}")

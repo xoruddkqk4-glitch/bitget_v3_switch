@@ -3,9 +3,12 @@ manager/cycle_manager.py
 A/B 전략별 더미 카운트, 실제 매수 회차(executed_units) 및 평단가/수량 영속성 관리 모듈 (PRD 섹션 2 & 5)
 """
 
+import atexit
+import hashlib
 import json
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -19,6 +22,142 @@ from utils.logger import logger
 KST = timezone(timedelta(hours=9))
 
 
+# ---------------------------------------------------------------------
+# 구글 시트 STATE_SYNC (봇 상태 스냅샷) 백그라운드 전송
+#  - 엑셀 원장에 남지 않는 상태 변경(거래소 대조 자동 보정, 수동 채택, 트레일링 돌입, 부분 청산 잔량)을
+#    대시보드가 알 수 있도록 state.json 저장 직후 핵심 필드만 보냅니다.
+#  - 별도 스레드에서 보내므로 매매 루프를 절대 막지 않습니다. 모든 예외는 이 안에서 처리합니다.
+#  - 직전에 보낸 내용과 같으면 보내지 않고, 연속 전송 사이에는 최소 10초 간격을 둡니다(최신값만 전송).
+# ---------------------------------------------------------------------
+_SYNC_FIELDS = (
+    "total_qty", "avg_price", "executed_units", "dummy_count", "cycle_id",
+    "trailing_mode", "trailing_base_price", "trailing_target_price",
+    "cumulative_realized_pnl", "last_action", "last_action_date",
+)
+
+
+def _import_sheets_logger():
+    try:
+        from sheets_logger import SheetsLogger
+        return SheetsLogger
+    except ImportError:
+        import sys
+        here = Path(__file__).resolve().parent
+        for p in (here, here.parent):
+            if str(p) not in sys.path:
+                sys.path.append(str(p))
+        from sheets_logger import SheetsLogger
+        return SheetsLogger
+
+
+class _StateSyncPusher:
+    MIN_INTERVAL = 10.0   # 연속 전송 최소 간격(초)
+    MAX_FAILS = 3         # 연속 실패 시 이번 스냅샷은 포기(다음 상태 변경 때 다시 시도)
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending = None
+        self._pending_body = None
+        self._last_body = None
+        self._last_sent = 0.0
+        self._fails = 0
+        self._thread = None
+        self._flush_evt = threading.Event()
+        self._sheet_logger = None
+        self._disabled = False
+        atexit.register(self.flush, 5.0)   # 종료 직전 대기 중인 스냅샷 전송 시도
+
+    def _get_sheet_logger(self):
+        if self._sheet_logger is None and not self._disabled:
+            try:
+                SheetsLogger = _import_sheets_logger()
+                lg = SheetsLogger(strategy_name="v3-switch", exchange="Bitget", timeout=5, silent=True)
+                if not lg.webhook_url or not lg.auth_token:
+                    self._disabled = True
+                    logger.warning("[CycleManager] GSHEET_WEBHOOK_URL/GSHEET_AUTH_TOKEN 미설정: 상태 동기화(STATE_SYNC)를 건너뜁니다.")
+                    return None
+                self._sheet_logger = lg
+            except Exception as e:
+                self._disabled = True
+                logger.warning(f"[CycleManager] 시트 로거 로드 실패, 상태 동기화 비활성화: {e}")
+        return self._sheet_logger
+
+    def push(self, snapshot: Dict[str, Any]):
+        if self._disabled:
+            return
+        try:
+            body = json.dumps(snapshot, sort_keys=True, ensure_ascii=False, default=str)
+            with self._lock:
+                if body == self._last_body or body == self._pending_body:
+                    return
+                self._pending = snapshot
+                self._pending_body = body
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._run, name="v3-state-sync", daemon=True)
+                    self._thread.start()
+        except Exception as e:
+            logger.warning(f"[CycleManager] 상태 스냅샷 큐 등록 실패(무시): {e}")
+
+    def flush(self, timeout: float = 5.0):
+        t = self._thread
+        if t is None:
+            return
+        self._flush_evt.set()
+        try:
+            t.join(timeout)
+        except Exception:
+            pass
+
+    def _run(self):
+        try:
+            while True:
+                with self._lock:
+                    if self._pending is None:
+                        self._thread = None
+                        return
+                    wait = self.MIN_INTERVAL - (time.time() - self._last_sent)
+                if wait > 0 and not self._flush_evt.is_set():
+                    self._flush_evt.wait(timeout=wait)
+                    continue
+                with self._lock:
+                    snap, body = self._pending, self._pending_body
+                    self._pending, self._pending_body = None, None
+                ok = False
+                try:
+                    lg = self._get_sheet_logger()
+                    ok = bool(lg.log_bot_state(snap, strategy_name="v3-switch")) if lg else False
+                except Exception as e:
+                    logger.warning(f"[CycleManager] 상태 스냅샷 전송 예외(무시): {e}")
+                with self._lock:
+                    self._last_sent = time.time()
+                    if ok:
+                        self._last_body = body
+                        self._fails = 0
+                    elif self._disabled:
+                        self._pending, self._pending_body = None, None
+                    else:
+                        self._fails += 1
+                        if self._fails < self.MAX_FAILS and self._pending is None:
+                            self._pending, self._pending_body = snap, body   # 같은 스냅샷 재시도
+                        else:
+                            self._fails = 0
+                            logger.warning("[CycleManager] 상태 스냅샷 전송 연속 실패: 다음 상태 변경 때 다시 시도합니다.")
+        except Exception as e:
+            logger.warning(f"[CycleManager] 상태 동기화 스레드 오류(무시): {e}")
+            with self._lock:
+                self._thread = None
+
+
+_state_pusher = None
+
+
+def _get_state_pusher() -> _StateSyncPusher:
+    global _state_pusher
+    if _state_pusher is None:
+        _state_pusher = _StateSyncPusher()
+    return _state_pusher
+
+
 class CycleManager:
     """
     state.json 파일을 원자적으로 읽고 쓰며 사이클 및 더미 진행 상황을 제어하는 매니저
@@ -28,7 +167,24 @@ class CycleManager:
         self.backup_file = self.state_file.with_suffix(".bak.json")
         self.load_error: Optional[str] = None
         self.state: Dict[str, Any] = self._load_state()
+        self._push_state_sync(self.state)   # 시작 시점 상태를 대시보드에 반영
 
+    def _build_sync_snapshot(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """대시보드가 필요한 핵심 필드만 추립니다 (last_updated 등 매번 바뀌는 값은 제외)."""
+        snap: Dict[str, Any] = {"schema": 1, "bot": "v3-switch"}
+        for key in ("strategy_A", "strategy_B"):
+            s = state.get(key, {}) or {}
+            snap[key] = {f: s.get(f) for f in _SYNC_FIELDS}
+        return snap
+
+    def _push_state_sync(self, state: Dict[str, Any]):
+        """state.json 저장 직후 호출. 실패해도 절대 예외를 밖으로 던지지 않습니다."""
+        try:
+            if self.load_error:
+                return
+            _get_state_pusher().push(self._build_sync_snapshot(state))
+        except Exception as e:
+            logger.warning(f"[CycleManager] 상태 동기화 등록 실패(무시): {e}")
     def _get_kst_time_str(self) -> str:
         """현재 한국 시간(KST) 문자열을 반환합니다."""
         return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
@@ -118,6 +274,7 @@ class CycleManager:
                 shutil.copy2(self.state_file, self.backup_file)
             temp_file.replace(self.state_file)
             self.state = state
+            self._push_state_sync(state)
         except Exception as e:
             logger.error(f"[CycleManager] state.json 저장 실패: {e}")
             if temp_file.exists():

@@ -640,5 +640,22 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py utils/excel_logger.py` 오류 0건 통과
   - EC2 실서버(`ec2:/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
 
+## [2026-10-24 11:30] 업데이트 이력 (Commit ID: 0fb61c5)
+- **수정 내용**:
+  - **구글 시트 연동 체결 데이터 규격화 및 중복 방지 강화 (`sheets_logger.py`, `utils/excel_logger.py`)**:
+    - `SheetsLogger.log_trade`: `trade_id`, `event`, `side`, `is_dummy`, `close_all` 파라미터 확장 및 서버 `duplicate` 응답 처리 지원
+    - `SheetsLogger.log_bot_state`: 응답 본문의 `status == "success"` 검증을 통한 상태 동기화 신뢰성 개선
+    - `utils/excel_logger.py`:
+      - 이벤트별 시트 규격 매핑(`_map_sheet_event`) 도입 (`SELL_CLEAR_PARTIAL`은 `close_all=False`, `TRAIL_RATCHET`/`SYNC_*`는 `INFO`로 분리하여 손익 집계 오염 방지)
+      - 전략별 포지션 방향 자동 식별(`_side_from_strategy`) 및 비고 내 수수료 추출(`_extract_fee`)
+      - 결정론적 SHA1 해시 기반 고유 `trade_id` (`v3-...`) 생성으로 네트워크 재시도 시에도 중복 기록 원천 차단
+  - **봇 내부 상태(state.json) 비동기 백그라운드 동기화 구현 (`manager/cycle_manager.py`)**:
+    - `_StateSyncPusher` 백그라운드 스레드 워커 구현: `state.json` 저장 시 핵심 필드(`total_qty`, `avg_price`, `executed_units`, `dummy_count`, `trailing_mode` 등)를 구글 시트로 안전하게 비동기 전송
+    - 최소 10초 스로틀링, 중복 바디 전송 방지, 데몬 스레드 및 `atexit` 플러시 적용으로 매매 루프 무중단 보장
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py utils/excel_logger.py manager/cycle_manager.py main.py` 오류 0건 통과
+  - EC2 실서버(`ec2:/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
+
+
 
 
