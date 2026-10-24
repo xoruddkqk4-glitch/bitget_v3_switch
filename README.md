@@ -672,3 +672,19 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 
 
 
+
+## [2026-10-24 13:58] 업데이트 이력 (Commit ID: 31fff43)
+- **수정 내용**:
+  - **에이전트 규칙 동기화**: `AGENTS.md`에 규칙 7(`/apply`) 추가, `.agents/rules/rules.md`에 EC2 조건부 자동 배포 절차 반영 (두 파일 규칙 1~7 일치)
+  - **매매 로직 검증 및 수정** (계획서: `docs/20261024_1355_trading_logic_review_implementation_plan.md`):
+    - 일봉 평가 1일 1회 가드: `last_daily_eval_candle` 영속 기록, 동일 완성봉 재실행 시 매매 없이 종료 (`--run-once --force`로만 재평가). 평가 시간대 09:10~09:30 확대로 실패 시 재시도 가능
+    - 2단계 트레일링 감시 중 잔고 조회 실패가 보존선 청산을 막지 않도록 예외 격리
+    - `--loop` 모드 틱마다 `cycle_manager.reload()` 호출로 수동 복구 내용 반영
+    - 부분 청산 발생 전략은 당일 진입 평가 제외 (`EXIT_PARTIAL`)
+    - 일일 보고서 포지션 동기화 줄을 전 전략 `OK/SYNCED` 일 때만 "정상" 표시
+    - 전량 청산 직후 잔고 재조회로 반대편 헤지 유닛 산정 정확도 개선
+    - `UNIT_DIVISOR` 15 → 16 (13회차 소요 15.25 Unit 대비 0.75 Unit 여유), PRD 수치(16등분, 최대 13회차) 갱신
+- **발생한 문제 및 해결**: 하루 2회 평가 시 더미/실전 매수 이중 집행 가능성, 잔고 API 장애 시 청산 불가, 보고서 불일치 오표시를 재현 후 수정
+- **검증 결과**:
+  - `python -m py_compile` 오류 0건
+  - PAPER 모드 임시 state 시나리오 8건 PASS (1일 1회 가드·영속성, 잔고 실패 중 청산, 부분 청산 진입 차단, 청산 후 잔고 재조회, 설정값) — 실제 state.json/엑셀 미변경
