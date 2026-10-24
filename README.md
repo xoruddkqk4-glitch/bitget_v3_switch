@@ -656,6 +656,19 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py utils/excel_logger.py manager/cycle_manager.py main.py` 오류 0건 통과
   - EC2 실서버(`ec2:/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
 
+## [2026-10-24 13:38] 업데이트 이력 (Commit ID: 21375b9)
+- **수정 내용**:
+  - **구글 시트 로거 백그라운드 큐 및 로컬 Outbox 장애 격리/재전송 시스템 구축 (`sheets_logger.py`)**:
+    - **완전 비동기 백그라운드 워커(`_worker`)**: `queue.Queue` 기반 데몬 스레드 워커를 도입하여 네트워크 지연 및 HTTP 호출이 메인 매매 루프를 절대 방해하지 않도록 개선
+    - **로컬 Outbox 보관 및 자동 재시도 (`sheets_outbox_*.jsonl`)**: 전송 실패한 체결/스냅샷을 로컬 JSONL 파일에 자동 보관하고 60초(`OUTBOX_RETRY_SEC`) 주기로 백그라운드 재전송 수행
+    - **중복 방지 및 데드 레터 큐 격리**: 서버 `duplicate` 응답 안전 처리 및 50회 연속 실패 시 영구 실패 항목을 `.dead.jsonl`로 안전하게 격리하여 outbox 파일 오염 방지
+    - **네트워크 백오프(Backoff)**: 일시적 네트워크 단절 감지 시 30초(`NETWORK_DOWN_BACKOFF_SEC`) 동안 신규 전송을 즉시 outbox에 보관하여 불필요한 타임아웃 지연 원천 차단
+    - **안전한 프로세스 종료(`atexit`)**: 봇 종료 시 대기 중인 큐 항목을 최대 5초(`EXIT_FLUSH_SEC`) 동안 플러시 처리하여 유실 방지
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py utils/excel_logger.py manager/cycle_manager.py main.py` 오류 0건 통과
+  - EC2 실서버(`ec2:/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
+
+
 
 
 
