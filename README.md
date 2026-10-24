@@ -688,3 +688,7 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 - **검증 결과**:
   - `python -m py_compile` 오류 0건
   - PAPER 모드 임시 state 시나리오 8건 PASS (1일 1회 가드·영속성, 잔고 실패 중 청산, 부분 청산 진입 차단, 청산 후 잔고 재조회, 설정값) — 실제 state.json/엑셀 미변경
+
+## [2026-10-24 14:00] 업데이트 이력 (Commit ID: 12c1df7)
+- **수정 내용**: 계획서 Step 8 반영 - 숏 전략(`strategy/strategy_b_short.py`)에 본전 가드 대칭 적용. `BREAKEVEN_GUARD_ENABLED=True`일 때 현재가가 평단×(1-0.2%)보다 높으면(수익 0.2% 미만) 완만한 반등 즉시 청산을 보류. 기본값 `False`라 현재 매매 동작은 변하지 않음
+- **검증 결과**: `py_compile` 통과, 가드 OFF 즉시 청산 / ON 수익 0.1% 보류 / ON 수익 0.5% 청산 확인
