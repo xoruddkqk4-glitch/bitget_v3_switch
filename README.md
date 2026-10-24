@@ -627,5 +627,18 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `python -m py_compile sheets_logger.py utils/excel_logger.py main.py` 전 파일 구문 컴파일 오류 0건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch`) SCP 파일 전송 및 원격 가상환경 문법 검증 완료
 
+## [2026-10-24 11:04] 업데이트 이력 (Commit ID: 3687fb0)
+- **수정 내용**:
+  - **구글 시트 웹훅 설정 보안 강화 및 공통 환경변수 통합 로더 구현 (`sheets_logger.py`)**:
+    - 소스 코드 내 하드코딩된 웹훅 URL 및 인증 토큰 제거
+    - 서버 공통 설정 파일(`/var/autobot/gsheet.env`) 자동 로딩 기능(`_load_env_file`) 추가 (프로세스당 1회 로드, 기설정 환경변수 우선 적용)
+    - `GSHEET_WEBHOOK_URL` 및 `GSHEET_AUTH_TOKEN` 환경변수 연동을 통한 유연하고 안전한 인증 체계 확립
+    - 웹훅 URL이 설정되었으나 인증 토큰이 누락된 경우 명확한 안내 경고 로그 출력
+  - **엑셀/시트 로거 인스턴스 보안 표준화 (`utils/excel_logger.py`)**:
+    - `SheetsLogger` 생성 시 하드코딩된 웹훅 URL 및 인증 토큰 제거, 중앙 환경변수 및 `gsheet.env` 자동 연동 체계로 전환
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py utils/excel_logger.py` 오류 0건 통과
+  - EC2 실서버(`ec2:/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
+
 
 

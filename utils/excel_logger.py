@@ -33,8 +33,7 @@ except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from sheets_logger import SheetsLogger
 sheet_logger = SheetsLogger(
-    webhook_url="https://script.google.com/macros/s/AKfycbws77Zb7aGqs_L5K0yLDf5iDVBXHKO_abf5eL1vlvUTh4197W-dujvmxm-vEBj8Hjdq/exec",
-    auth_token="trading_secret_2026",
+    # webhook_url / auth_token 은 환경변수 GSHEET_WEBHOOK_URL / GSHEET_AUTH_TOKEN 에서 읽습니다 (소스에 하드코딩 금지)
     strategy_name="v3-switch",
     exchange="Bitget"
 )

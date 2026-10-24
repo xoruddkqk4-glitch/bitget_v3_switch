@@ -19,6 +19,45 @@ except ImportError:
 
 logger = logging.getLogger("SheetsLogger")
 
+# 서버 공통 설정 파일 기본 경로 (환경변수 GSHEET_ENV_FILE 로 변경 가능)
+DEFAULT_ENV_FILE = "/var/autobot/gsheet.env"
+_ENV_LOADED = False
+
+
+def _load_env_file(silent: bool = False) -> None:
+    """
+    공통 env 파일(KEY=VALUE 형식)에서 GSHEET_* 설정을 읽어 os.environ 에 채웁니다.
+    - 이미 설정된 환경변수는 덮어쓰지 않습니다 (export 값이 항상 우선)
+    - 파일이 없거나 읽을 수 없으면 조용히 건너뜁니다
+    - 프로세스당 한 번만 실행합니다
+    """
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    _ENV_LOADED = True
+
+    path = os.getenv("GSHEET_ENV_FILE", DEFAULT_ENV_FILE)
+    try:
+        if not os.path.isfile(path):
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception as e:  # 설정 파일 문제로 매매 루프가 중단되면 안 됨
+        if not silent:
+            print(f"SheetsLogger: env 파일({path}) 로드 실패: {e}")
+
 
 class SheetsLogger:
     def __init__(
@@ -32,14 +71,18 @@ class SheetsLogger:
     ):
         """
         :param webhook_url: Apps Script 웹 앱 배포 URL (https://script.google.com/macros/s/.../exec)
-        :param auth_token: Config 시트에 등록된 인증 비밀키 (기본: trading_secret_2026)
+        :param auth_token: Apps Script Script Properties(SECRET_AUTH_TOKEN)에 등록된 인증 비밀키 (기본: 환경변수 GSHEET_AUTH_TOKEN)
         :param strategy_name: 전략명 ("그리드", "떨사오팔", "v3-switch")
         :param exchange: 거래소명 ("Bitget", "Binance" 등, 기본: Bitget)
         :param timeout: HTTP 요청 타임아웃 초 (기본: 3초)
         :param silent: True일 경우 터미널 에러 출력 음소거
         """
+        _load_env_file(silent)
         self.webhook_url = webhook_url or os.getenv("GSHEET_WEBHOOK_URL", "")
-        self.auth_token = auth_token or os.getenv("GSHEET_AUTH_TOKEN", "trading_secret_2026")
+        # 인증 토큰은 소스에 기본값을 두지 않으며 환경변수(GSHEET_AUTH_TOKEN)로만 주입합니다.
+        self.auth_token = auth_token or os.getenv("GSHEET_AUTH_TOKEN", "")
+        if self.webhook_url and not self.auth_token and not silent:
+            print(f"[{strategy_name}] SheetsLogger: GSHEET_AUTH_TOKEN 환경변수가 없어 시트 전송이 인증 실패(401)로 거부됩니다.")
         self.strategy_name = strategy_name
         self.exchange = exchange
         self.timeout = timeout
