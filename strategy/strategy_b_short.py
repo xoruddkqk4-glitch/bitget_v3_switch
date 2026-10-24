@@ -13,6 +13,8 @@ from config import (
     SHORT_EXIT_RISING_SMA,
     SHORT_EXIT_FALLING_SMA_MILD,
     SHORT_EXIT_FALLING_SMA_DEEP,
+    BREAKEVEN_GUARD_ENABLED,
+    BREAKEVEN_GUARD_MIN_PCT,
     STAGE2_SIGNAL_MODE,
     HYBRID_TRAILING_MIN_PNL_PCT
 )
@@ -96,6 +98,15 @@ class StrategyBShort(BaseStrategy):
                         f"& 고수익 달성({current_pnl_pct:+.2f}% >= +{HYBRID_TRAILING_MIN_PNL_PCT:.1f}%) → 2단계 4H 5MA 감시 돌입"
                     )
                     return True, action, reason, target_price
+
+                # 본전 가드 (선택 옵션, 롱과 대칭): 현재가 <= 평단 × (1 - BREAKEVEN_GUARD_MIN_PCT) 일 때만 청산
+                if BREAKEVEN_GUARD_ENABLED:
+                    guard_price = avg_price * (1.0 - BREAKEVEN_GUARD_MIN_PCT)
+                    if avg_price > 0 and current_price > guard_price:
+                        return False, "NONE", (
+                            f"60일선 하락장 & 완만한 반등({rebound_rate*100:+.1f}% < +30%): SMA5*1.01 목표가(${target_price:,.2f}) 도달 | "
+                            f"본전 가드 미달(현재가 ${current_price:,.2f} > 평단×{1.0 - BREAKEVEN_GUARD_MIN_PCT:.3f} ${guard_price:,.2f}) → 보유 유지"
+                        ), target_price
 
                 # 수익률 기준치 미만인 경우: 기존대로 안전 즉시 본탈
                 action = "IMMEDIATE_EXIT"
