@@ -389,9 +389,15 @@ class CycleManager:
             f"누적 {s['executed_units']}회차, 신규수량 {qty:,.4f}, 총수량 {new_qty:,.4f}, 신규평단 ${new_avg:,.2f}"
         )
 
-    def reset_cycle(self, strategy_name: str, date_str: str, transfer_to_dummy1: bool = False):
+    def reset_cycle(
+        self,
+        strategy_name: str,
+        date_str: str,
+        transfer_to_dummy1: bool = False,
+        last_action: Optional[str] = None
+    ):
         """
-        포지션 청산 완료 후 싸이클을 초기화합니다.
+        포지션 청산 완료 또는 더미 목표가 도달 후 싸이클을 초기화합니다.
         당일 청산 후 매수 신호 동시 발생 시 transfer_to_dummy1=True로 호출하여 1차 더미로 이관합니다.
         """
         s = self.state[strategy_name]
@@ -422,9 +428,10 @@ class CycleManager:
             logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 시작 (당일 청산 후 매수신호 발생으로 1차 더미 이관 처리)")
         else:
             s["dummy_count"] = 0
-            s["last_action"] = "SELL_CLEAR"
+            s["last_action"] = last_action or "SELL_CLEAR"
             s["last_action_date"] = date_str
-            logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 초기화 완료 (모든 포지션 청산)")
+            desc = "더미 목표가 도달 싸이클 종료" if last_action == "RESET_DUMMY" else "모든 포지션 청산"
+            logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 초기화 완료 ({desc})")
 
         self._save_state(self.state)
 

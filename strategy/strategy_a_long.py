@@ -67,9 +67,11 @@ class StrategyALong(BaseStrategy):
         """
         total_qty = cycle_info.get('total_qty', 0.0)
         executed_units = cycle_info.get('executed_units', 0)
-        if total_qty <= 0 and executed_units <= 0:
-            return False, "NONE", "롱 포지션 미보유 (청산 조건 패스)", 0.0
+        dummy_count = cycle_info.get('dummy_count', 0)
+        if total_qty <= 0 and executed_units <= 0 and dummy_count <= 0:
+            return False, "NONE", "롱 포지션 및 더미 미보유 (청산 조건 패스)", 0.0
 
+        is_dummy_only = (total_qty <= 0 and executed_units <= 0 and dummy_count > 0)
         sma5 = indicators.get('sma5', 0.0)
         is_sma60_rising = indicators.get('is_sma60_rising', False)
         drawdown_rate = indicators.get('drawdown_rate', 0.0)
@@ -77,6 +79,14 @@ class StrategyALong(BaseStrategy):
         if is_sma60_rising:
             target_price = sma5 * LONG_EXIT_RISING_SMA
             is_met = current_price >= target_price
+            if is_dummy_only:
+                action = "CLEAR_DUMMY" if is_met else "NONE"
+                reason = (
+                    f"60일선 상승 중: 더미 {dummy_count}차 상태에서 목표가(${target_price:,.2f}) 도달 (더미 초기화 및 싸이클 종료)"
+                    if is_met else
+                    f"60일선 상승 중: 더미 {dummy_count}차 유지 (현재가 < 목표가 ${target_price:,.2f})"
+                )
+                return is_met, action, reason, target_price
             action = "ENTER_STAGE2" if is_met else "NONE"
             reason = f"60일선 상승 중: 일봉 SMA5*1.02 목표가(${target_price:,.2f}) 도달 (2단계 4H 5MA 감시 돌입)"
             return is_met, action, reason, target_price
@@ -85,6 +95,15 @@ class StrategyALong(BaseStrategy):
                 # 완만한 하락장: 목표가 도달 시 스마트 하이브리드 익절/본탈 판정
                 target_price = sma5 * LONG_EXIT_FALLING_SMA_MILD
                 is_met = current_price >= target_price
+                if is_dummy_only:
+                    action = "CLEAR_DUMMY" if is_met else "NONE"
+                    reason = (
+                        f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 더미 {dummy_count}차 상태에서 목표가(${target_price:,.2f}) 회복 (더미 초기화 및 싸이클 종료)"
+                        if is_met else
+                        f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 더미 {dummy_count}차 유지 (현재가 < 목표가 ${target_price:,.2f})"
+                    )
+                    return is_met, action, reason, target_price
+
                 if not is_met:
                     return False, "NONE", f"60일선 하락장 & 완만한 하락({drawdown_rate*100:.1f}% > -30%): 현재가 < SMA5*0.99 목표가(${target_price:,.2f})", target_price
 
@@ -120,6 +139,14 @@ class StrategyALong(BaseStrategy):
                 # 깊은 하락장: 반등 익절 (2단계 감시)
                 target_price = sma5 * LONG_EXIT_FALLING_SMA_DEEP
                 is_met = current_price >= target_price
+                if is_dummy_only:
+                    action = "CLEAR_DUMMY" if is_met else "NONE"
+                    reason = (
+                        f"60일선 하락장 & 과낙폭({drawdown_rate*100:.1f}% <= -30%): 더미 {dummy_count}차 상태에서 목표가(${target_price:,.2f}) 도달 (더미 초기화 및 싸이클 종료)"
+                        if is_met else
+                        f"60일선 하락장 & 과낙폭({drawdown_rate*100:.1f}% <= -30%): 더미 {dummy_count}차 유지 (현재가 < 목표가 ${target_price:,.2f})"
+                    )
+                    return is_met, action, reason, target_price
                 action = "ENTER_STAGE2" if is_met else "NONE"
                 reason = f"60일선 하락장 & 과낙폭({drawdown_rate*100:.1f}% <= -30%): SMA5*1.03 목표가(${target_price:,.2f}) 도달 (2단계 반등 감시 돌입)"
                 return is_met, action, reason, target_price

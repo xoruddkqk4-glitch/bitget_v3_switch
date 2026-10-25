@@ -267,13 +267,16 @@ class Trader:
 
         total_qty = float(state.get('total_qty', 0.0))
         executed_units = int(state.get('executed_units', 0))
+        dummy_count = int(state.get('dummy_count', 0))
 
-        if total_qty <= 0 and executed_units <= 0:
+        if total_qty <= 0 and executed_units <= 0 and dummy_count <= 0:
             self.last_eval[strategy_name]["exit_reason"] = "미보유 (해당 없음)"
         elif state.get("trailing_mode", False):
             self.last_eval[strategy_name]["exit_reason"] = f"2단계 트레일링 감시 진행 중 ({exit_reason})"
         elif not exit_met:
             self.last_eval[strategy_name]["exit_reason"] = exit_reason
+        elif action == "CLEAR_DUMMY":
+            self.last_eval[strategy_name]["exit_reason"] = f"더미 목표가 도달 → 더미 초기화 및 싸이클 종료 ({exit_reason})"
         elif action == "ENTER_STAGE2":
             self.last_eval[strategy_name]["exit_reason"] = f"목표가 도달 → 2단계 감시 돌입 ({exit_reason})"
         elif action == "IMMEDIATE_EXIT":
@@ -290,6 +293,55 @@ class Trader:
         if not exit_met:
             logger.info(f"[Trader] [{strategy_name}] {label} 1차 청산 조건 미충족 ({exit_reason})")
             return False
+
+        if action == "CLEAR_DUMMY":
+            logger.info(f"[Trader] [{strategy_name}] {label} 더미 목표가 도달! 사유: {exit_reason}")
+            # 1) 엑셀 및 구글 시트에 RESET_DUMMY 기록
+            self.excel.append_record(
+                date_str=date_str,
+                strategy_name=strategy_name,
+                event_type="RESET_DUMMY",
+                price=current_price,
+                qty=None,
+                unit_label="더미 초기화",
+                dummy_status="0 / 2",
+                total_balance=self.last_total_balance,
+                note=f"{exit_reason} (더미 {dummy_count}차 목표가 도달로 싸이클 초기화)",
+                realized_pnl=0.0,
+                pnl_pct=0.0
+            )
+            # 2) 싸이클 초기화 (dummy_count=0, cycle_id+=1, last_action="RESET_DUMMY")
+            prev_cycle_id = state.get("cycle_id", 1)
+            self.cycles.reset_cycle(
+                strategy_name=strategy_name,
+                date_str=date_str,
+                transfer_to_dummy1=False,
+                last_action="RESET_DUMMY"
+            )
+            new_state = self.cycles.get_strategy_state(strategy_name)
+            next_cycle_id = new_state.get("cycle_id", prev_cycle_id + 1)
+
+            # 3) 텔레그램 알림 발송
+            kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+            msg = f"🎯 [{label} 더미 싸이클 종료] {exit_reason} (더미 {dummy_count}차 → 0/2 초기화, 신규 싸이클 #{next_cycle_id})"
+            execution_logs.append(msg)
+            close_notif = (
+                f"<b>🎯 [Bitget V3 Switch {label} 더미 싸이클 종료 보고]</b>\n\n"
+                f"• <b>기준 일시:</b> {kst_str}\n"
+                f"• <b>종목:</b> {self.client.symbol}\n"
+                f"• <b>종료 사유:</b> {self._escape(exit_reason)}\n"
+                f"• <b>현재가/목표가:</b> ${current_price:,.2f} / ${target_price:,.2f}\n"
+                f"• <b>조치:</b> 더미({dummy_count}/2) 0/2 초기화 및 싸이클 #{prev_cycle_id} 종료 → 싸이클 #{next_cycle_id} 오픈\n"
+                f"• <b>계좌 잔고:</b> ${self.last_total_balance:,.2f}"
+            )
+            self.notifier.send_message(close_notif)
+
+            self.last_eval[strategy_name]["cleared"] = True
+            self.last_eval[strategy_name]["cleared_type"] = "더미 목표가 도달"
+            self.last_eval[strategy_name]["cleared_pnl_usd"] = 0.0
+            self.last_eval[strategy_name]["cleared_pnl_pct"] = 0.0
+            self.last_eval[strategy_name]["cleared_price"] = current_price
+            return True
 
 
         if action == "ENTER_STAGE2":
@@ -560,11 +612,17 @@ class Trader:
                 cleared_type = eval_data.get("cleared_type", "청산")
                 pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
                 pnl_usd = eval_data.get("cleared_pnl_usd", 0.0)
-                action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%)"
-                action_detail = f"당일 전량 청산({pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%) 완료 후 포지션 미보유 유지"
+                if "더미" in cleared_type:
+                    action_title = f"[{cleared_type} 완료]"
+                    action_detail = "더미 목표가 도달로 더미 0/2 리셋 및 싸이클 종료 (포지션 미보유)"
+                    summary_icon = "🎯"
+                else:
+                    action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%)"
+                    action_detail = f"당일 전량 청산({pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%) 완료 후 포지션 미보유 유지"
+                    summary_icon = "🎉"
                 self._set_eval(
                     strategy_name, False, "CLEARED_NO_ENTRY", entry_reason,
-                    f"🎉 {action_title} ({entry_reason})",
+                    f"{summary_icon} {action_title} ({entry_reason})",
                     entry_reason=entry_reason,
                     action_title=action_title,
                     action_detail=action_detail
@@ -601,8 +659,12 @@ class Trader:
             eval_data = self.last_eval.get(strategy_name, {})
             cleared_type = eval_data.get("cleared_type", "청산")
             pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
-            action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%) → 더미 1차 이관 (1/2)"
-            action_detail = f"당일 전량 청산 완료 후 신규 싸이클 1차 더미 방어 진입"
+            if "더미" in cleared_type:
+                action_title = f"[{cleared_type} 완료] → 더미 1차 이관 (1/2)"
+                action_detail = "당일 더미 목표가 도달 싸이클 종료 후 신규 싸이클 1차 더미 방어 진입"
+            else:
+                action_title = f"[{cleared_type} 청산 완료] ({pnl_pct:+.2f}%) → 더미 1차 이관 (1/2)"
+                action_detail = f"당일 전량 청산 완료 후 신규 싸이클 1차 더미 방어 진입"
             self._set_eval(
                 strategy_name, True, "DUMMY_TRANSFERRED", entry_reason, f"🟡 1차 더미 이관 ({entry_reason})",
                 entry_reason=entry_reason,
