@@ -23,6 +23,8 @@ from config import (
     DAILY_EVAL_HOUR_KST,
     DAILY_EVAL_START_MIN,
     DAILY_EVAL_END_MIN,
+    WEEKEND_FREEZE_ENABLED,
+    WEEKEND_FREEZE_DAYS,
     PAPER_TRADING,
     UNIT_DIVISOR,
     MIN_ORDER_USD,
@@ -143,7 +145,14 @@ def run_pipeline(force: bool = False) -> bool:
     logger.info("=" * 70)
 
     try:
-        # 0. state.json 무결성 확인 (실전 모드 손상 시 중단)
+        # 0. 주말 미국 본장 휴장 동결 가드 (일요일/월요일 아침 캔들)
+        kst_now = datetime.now(KST)
+        if not force and WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
+            day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
+            logger.info(f"[Pipeline] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가가 동결(Freeze)되었습니다. (강제 실행: --run-once --force)")
+            return True
+
+        # 0-1. state.json 무결성 확인 (실전 모드 손상 시 중단)
         if cycle_manager.load_error:
             raise StateCorruptedError(cycle_manager.load_error)
 
@@ -399,7 +408,11 @@ def run_cron_tick() -> bool:
     logger.info(f"[CronTick] 5분 주기 감시 틱 실행 (KST {kst_now.strftime('%Y-%m-%d %H:%M:%S')})")
 
     if is_daily_evaluation_window():
-        logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:15 KST) 충족 -> 일봉 마감 파이프라인 실행")
+        if WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
+            day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
+            logger.info(f"[CronTick] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가를 동결(Freeze)합니다.")
+            return True
+        logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:30 KST) 충족 -> 일봉 마감 파이프라인 실행")
         return run_pipeline()
 
     if cycle_manager.is_any_trailing_active():

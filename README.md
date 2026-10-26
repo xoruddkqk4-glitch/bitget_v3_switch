@@ -714,3 +714,21 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
     - 롱/숏 전략 더미 상태에서 목표가 도달 시 `CLEAR_DUMMY` 액션 반환 및 싸이클 초기화 정상 확인
     - 목표가 미달 및 완전 미보유 시 청산 패스 정상 확인
     - 실전 매수 포지션(`executed_units >= 1`) 보유 시 기존 트레일링/즉시 청산 동작 보존 확인
+
+## [2026-10-26 11:05] 업데이트 이력 (Commit ID: bec25d2)
+- **수정 내용**:
+  - **SOXL 주말 이평선 왜곡 및 더미 조기 청산 방지를 위한 Weekend Freeze(주말 일봉 평가 동결) 시스템 구축**:
+    - **설정 옵션 신설 (`config.py`)**:
+      - `WEEKEND_FREEZE_ENABLED = True`: 미국 본장 휴장일 주말 일봉 평가 동결 On/Off 플래그 추가
+      - `WEEKEND_FREEZE_DAYS = (0, 6)`: 동결 요일(일요일 09:10 KST = 토요일치 캔들, 월요일 09:10 KST = 일요일치 캔들) 명시
+    - **일봉 파이프라인 및 크론 틱 동결 가드 반영 (`main.py`)**:
+      - `run_cron_tick()`: 일요일 및 월요일 아침 09:10~09:30 시간대 진입 시, 미국 본장 휴장으로 일봉 마감 평가를 동결(Freeze)하고 0.05초 만에 안전 종료
+      - `run_pipeline(force=False)`: 일봉 마감 파이프라인 진입부에서 주말 동결 가드를 적용하여 주말 정체 캔들로 인한 이평선 왜곡 및 롱/숏 더미 동시 청산 원천 차단 (테스트 및 긴급 집행 시 `--run-once --force`로 우회 가능)
+      - **4시간봉 2단계 트레일링 감시 보존**: 보유 중인 실전 포지션 방어를 위해 2단계 트레일링 감시는 주말에도 5분 주기로 정상 구동
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile config.py main.py` 오류 0건 통과
+  - 요일별 시뮬레이션 단위 테스트 100% 통과:
+    - 일요일(09:12 KST) 및 월요일(09:12 KST) 일봉 평가 자동 동결(Freeze) 확인
+    - 토요일(09:12 KST, 금요일 본장 반영) 및 화요일(09:12 KST, 월요일 본장 반영) 정상 평가(Active) 확인
+    - `run_pipeline(force=False)` 주말 자동 스킵 및 `WEEKEND_FREEZE_ENABLED=False` 하위 호환성 확인
+
