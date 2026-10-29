@@ -185,6 +185,18 @@ def run_pipeline(force: bool = False) -> bool:
         logs = trader.process_daily_cycle(indicators, blocked=blocked)
         cycle_manager.mark_daily_evaluated(eval_candle)
 
+        # 5-1. 대시보드 STATE_SYNC용 4시간봉 5MA 상승 추세 상태 갱신 (보유 0개여도 동기화)
+        try:
+            df_4h_sync = bitget_client.fetch_ohlcv(TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)
+            if df_4h_sync is not None and not df_4h_sync.empty and len(df_4h_sync) >= MIN_4H_CANDLES:
+                ind_4h = IndicatorCalculator.calculate_4h(df_4h_sync)
+                c_4h = float(ind_4h.get("eval_close", 0.0) or 0.0)
+                m_4h = float(ind_4h.get("sma5", 0.0) or 0.0)
+                if c_4h > 0 and m_4h > 0:
+                    cycle_manager.update_trend_riding(is_active=(c_4h >= m_4h), prev_close_4h=c_4h, ma5_4h=m_4h)
+        except Exception as e_4h:
+            logger.warning(f"[Pipeline] 4시간봉 추세 상태 동기화 생략: {e_4h}")
+
         # 6. 상태 요약 및 텔레그램 발송
         updated_state_a = cycle_manager.get_strategy_state("strategy_A")
         updated_state_b = cycle_manager.get_strategy_state("strategy_B")
@@ -418,6 +430,19 @@ def run_cron_tick() -> bool:
     if cycle_manager.is_any_trailing_active():
         logger.info("[CronTick] 2단계 트레일링 감시 활성 상태 -> 4시간봉 감시 파이프라인 실행")
         return run_stage2_pipeline()
+
+    # 포지션 미보유/1단계 상태에서도 매시 첫 5분 틱(0~7분)마다 4시간봉 추세 상태를 대시보드에 동기화
+    if kst_now.minute < 8:
+        try:
+            df_4h_sync = bitget_client.fetch_ohlcv(TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)
+            if df_4h_sync is not None and not df_4h_sync.empty and len(df_4h_sync) >= MIN_4H_CANDLES:
+                ind_4h = IndicatorCalculator.calculate_4h(df_4h_sync)
+                c_4h = float(ind_4h.get("eval_close", 0.0) or 0.0)
+                m_4h = float(ind_4h.get("sma5", 0.0) or 0.0)
+                if c_4h > 0 and m_4h > 0:
+                    cycle_manager.update_trend_riding(is_active=(c_4h >= m_4h), prev_close_4h=c_4h, ma5_4h=m_4h)
+        except Exception as e_4h:
+            logger.warning(f"[CronTick] 4시간봉 추세 상태 동기화 생략: {e_4h}")
 
     logger.info("[CronTick] 2단계 트레일링 미활성 및 일봉 평가 시간대 아님 -> 즉시 종료")
     return True

@@ -864,6 +864,14 @@ class Trader:
 
         indicators_4h = IndicatorCalculator.calculate_4h(df_4h)
         current_price = indicators_4h['current_price']
+        eval_close_4h = float(indicators_4h.get('eval_close', 0.0) or 0.0)
+        sma5_4h = float(indicators_4h.get('sma5', 0.0) or 0.0)
+        if eval_close_4h > 0 and sma5_4h > 0:
+            self.cycles.update_trend_riding(
+                is_active=(eval_close_4h >= sma5_4h),
+                prev_close_4h=eval_close_4h,
+                ma5_4h=sma5_4h
+            )
         date_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')   # 실제 청산 시각(KST)
         try:
             self._refresh_balance()

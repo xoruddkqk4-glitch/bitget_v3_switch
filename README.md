@@ -732,3 +732,16 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
     - 토요일(09:12 KST, 금요일 본장 반영) 및 화요일(09:12 KST, 월요일 본장 반영) 정상 평가(Active) 확인
     - `run_pipeline(force=False)` 주말 자동 스킵 및 `WEEKEND_FREEZE_ENABLED=False` 하위 호환성 확인
 
+## [2026-10-29 23:06] 업데이트 이력 (Commit ID: 996cd9e)
+- **수정 내용**:
+  - **대시보드 `STATE_SYNC`용 4시간봉 5MA 상승 추세 상태(`trend_riding`) 상시 동기화 구현 (`manager/cycle_manager.py`, `manager/trader.py`, `main.py`)**:
+    - `manager/cycle_manager.py`:
+      - `update_trend_riding(is_active, prev_close_4h, ma5_4h)` 메서드 신규 추가: 4시간봉 완성봉 종가(`prev_close_4h`) 및 5MA(`ma5_4h`) 기준 상승 추세 여부(`active`), 2단계 트레일링 활성 여부(`stage2_active`)를 `state.json`에 기록하고 변경 시 구글 시트 `STATE_SYNC`로 자동 푸시
+      - `_extract_sync_snapshot()` 스냅샷 대상에 `trend_riding` 딕셔너리 포함
+    - `manager/trader.py`:
+      - 2단계 4시간봉 트레일링 감시(`process_stage2_monitoring`) 수행 시 산출된 4시간봉 완성봉 종가와 5MA를 `update_trend_riding()`으로 즉시 반영
+    - `main.py`:
+      - 일봉 마감 평가(`run_pipeline`) 직후 및 포지션 미보유/1단계 상태의 매시 첫 5분 크론 틱(`kst_now.minute < 8`)마다 4시간봉 데이터를 조회하여, 보유 수량이 0개일 때도 대시보드에 최신 4시간봉 추세 상태가 동기화되도록 개선
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile main.py manager/cycle_manager.py manager/trader.py` 오류 0건 통과
+

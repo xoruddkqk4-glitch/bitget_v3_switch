@@ -175,6 +175,8 @@ class CycleManager:
         for key in ("strategy_A", "strategy_B"):
             s = state.get(key, {}) or {}
             snap[key] = {f: s.get(f) for f in _SYNC_FIELDS}
+        if isinstance(state.get("trend_riding"), dict):
+            snap["trend_riding"] = state.get("trend_riding")
         return snap
 
     def _push_state_sync(self, state: Dict[str, Any]):
@@ -533,6 +535,21 @@ class CycleManager:
         a_active = self.state.get("strategy_A", {}).get("trailing_mode", False)
         b_active = self.state.get("strategy_B", {}).get("trailing_mode", False)
         return bool(a_active or b_active)
+
+    def update_trend_riding(self, is_active: bool, prev_close_4h: float, ma5_4h: float):
+        """4시간봉 5MA 기준 상승 추세 상태를 state.json 및 대시보드 STATE_SYNC에 반영합니다."""
+        a_trailing = bool(self.state.get("strategy_A", {}).get("trailing_mode", False))
+        new_trend = {
+            "active": bool(is_active),
+            "stage2_active": a_trailing,
+            "prev_close_4h": round(float(prev_close_4h or 0.0), 4),
+            "ma5_4h": round(float(ma5_4h or 0.0), 4),
+            "timeframe": "4h",
+            "ma_period": 5,
+        }
+        if self.state.get("trend_riding") != new_trend:
+            self.state["trend_riding"] = new_trend
+            self._save_state(self.state)
 
     # ------------------------------------------------------------------
     # 손상 대응 / 포지션 대조 지원 메서드
