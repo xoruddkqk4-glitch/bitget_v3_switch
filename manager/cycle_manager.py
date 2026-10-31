@@ -118,8 +118,12 @@ class _StateSyncPusher:
                     wait = self.MIN_INTERVAL - (time.time() - self._last_sent)
                 if wait > 0 and not self._flush_evt.is_set():
                     self._flush_evt.wait(timeout=wait)
-                    continue
+                    if not self._flush_evt.is_set():
+                        continue
                 with self._lock:
+                    if self._pending is None:
+                        self._thread = None
+                        return
                     snap, body = self._pending, self._pending_body
                     self._pending, self._pending_body = None, None
                 ok = False
@@ -167,7 +171,6 @@ class CycleManager:
         self.backup_file = self.state_file.with_suffix(".bak.json")
         self.load_error: Optional[str] = None
         self.state: Dict[str, Any] = self._load_state()
-        self._push_state_sync(self.state)   # 시작 시점 상태를 대시보드에 반영
 
     def _build_sync_snapshot(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """대시보드가 필요한 핵심 필드만 추립니다 (last_updated 등 매번 바뀌는 값은 제외)."""

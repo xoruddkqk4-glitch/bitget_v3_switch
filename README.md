@@ -745,3 +745,12 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 - **검증 결과**:
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile main.py manager/cycle_manager.py manager/trader.py` 오류 0건 통과
 
+## [2026-10-31 10:25] 업데이트 이력 (Commit ID: 968f066)
+- **수정 내용**:
+  - **상태 동기화 워커(`_StateSyncPusher`) 플러시 즉시 처리 및 불필요한 초기 푸시 제거 (`manager/cycle_manager.py`)**:
+    - `CycleManager.__init__()` 초기화 시점에 무조건 호출되던 `self._push_state_sync(self.state)` 제거: 5분 주기 크론(`--cron`) 프로세스 기동마다 상태 변경이 없음에도 매번 발생하던 중복 `STATE_SYNC` 웹훅 호출을 차단하고, 실제 상태 저장(`save_state`) 시에만 동기화되도록 최적화
+    - `_StateSyncPusher._run()` 스로틀 대기(`_flush_evt.wait`) 중 프로세스 종료 플러시(`_flush_evt.is_set()`) 신호 수신 시 불필요한 루프 재진입 없이 즉시 대기 중인 스냅샷을 전송하도록 개선 및 `_pending is None` 안전 가드 보강
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/cycle_manager.py` 오류 0건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/cycle_manager.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
+
