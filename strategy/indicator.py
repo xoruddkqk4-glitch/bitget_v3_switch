@@ -152,6 +152,8 @@ class IndicatorCalculator:
             'is_above_sma5_4h': is_above_sma5_4h,
             'closed_close': closed_close,
             'closed_sma5_4h': closed_sma5_4h,
+            'eval_close': closed_close,
+            'sma5': closed_sma5_4h,
             'closed_candle_close_ts': closed_candle_close_ts,
             'closed_candle_close_dt': closed_candle_close_dt,
             'is_closed_below_sma5_4h': is_closed_below_sma5_4h,

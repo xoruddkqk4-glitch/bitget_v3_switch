@@ -864,8 +864,8 @@ class Trader:
 
         indicators_4h = IndicatorCalculator.calculate_4h(df_4h)
         current_price = indicators_4h['current_price']
-        eval_close_4h = float(indicators_4h.get('eval_close', 0.0) or 0.0)
-        sma5_4h = float(indicators_4h.get('sma5', 0.0) or 0.0)
+        eval_close_4h = float(indicators_4h.get('closed_close') or indicators_4h.get('eval_close') or 0.0)
+        sma5_4h = float(indicators_4h.get('closed_sma5_4h') or indicators_4h.get('sma5') or 0.0)
         if eval_close_4h > 0 and sma5_4h > 0:
             self.cycles.update_trend_riding(
                 is_active=(eval_close_4h >= sma5_4h),

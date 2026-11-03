@@ -97,6 +97,20 @@ def is_daily_evaluation_window() -> bool:
     )
 
 
+def sync_4h_trend_state(context_label: str = "Pipeline"):
+    """대시보드 STATE_SYNC용 4시간봉 5MA 상승 추세 상태 갱신 (보유 0개여도 동기화)"""
+    try:
+        df_4h_sync = bitget_client.fetch_ohlcv(symbol=SYMBOL, timeframe=TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)
+        if df_4h_sync is not None and not df_4h_sync.empty and len(df_4h_sync) >= MIN_4H_CANDLES:
+            ind_4h = IndicatorCalculator.calculate_4h(df_4h_sync)
+            c_4h = float(ind_4h.get("closed_close") or ind_4h.get("eval_close") or 0.0)
+            m_4h = float(ind_4h.get("closed_sma5_4h") or ind_4h.get("sma5") or 0.0)
+            if c_4h > 0 and m_4h > 0:
+                cycle_manager.update_trend_riding(is_active=(c_4h >= m_4h), prev_close_4h=c_4h, ma5_4h=m_4h)
+    except Exception as e_4h:
+        logger.warning(f"[{context_label}] 4시간봉 추세 상태 동기화 생략: {e_4h}")
+
+
 def format_reconcile_summary(results: Dict[str, ReconcileResult]) -> str:
     """포지션 대조 결과 한 줄 요약"""
     if not results:
@@ -186,16 +200,7 @@ def run_pipeline(force: bool = False) -> bool:
         cycle_manager.mark_daily_evaluated(eval_candle)
 
         # 5-1. 대시보드 STATE_SYNC용 4시간봉 5MA 상승 추세 상태 갱신 (보유 0개여도 동기화)
-        try:
-            df_4h_sync = bitget_client.fetch_ohlcv(TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)
-            if df_4h_sync is not None and not df_4h_sync.empty and len(df_4h_sync) >= MIN_4H_CANDLES:
-                ind_4h = IndicatorCalculator.calculate_4h(df_4h_sync)
-                c_4h = float(ind_4h.get("eval_close", 0.0) or 0.0)
-                m_4h = float(ind_4h.get("sma5", 0.0) or 0.0)
-                if c_4h > 0 and m_4h > 0:
-                    cycle_manager.update_trend_riding(is_active=(c_4h >= m_4h), prev_close_4h=c_4h, ma5_4h=m_4h)
-        except Exception as e_4h:
-            logger.warning(f"[Pipeline] 4시간봉 추세 상태 동기화 생략: {e_4h}")
+        sync_4h_trend_state(context_label="Pipeline")
 
         # 6. 상태 요약 및 텔레그램 발송
         updated_state_a = cycle_manager.get_strategy_state("strategy_A")
@@ -424,8 +429,11 @@ def run_cron_tick() -> bool:
             day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
             logger.info(f"[CronTick] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가를 동결(Freeze)합니다.")
             return True
-        logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:30 KST) 충족 -> 일봉 마감 파이프라인 실행")
-        return run_pipeline()
+        expected_eval_candle = (kst_now - timedelta(days=1)).strftime("%Y-%m-%d 09:00:00")
+        if not cycle_manager.is_daily_evaluated(expected_eval_candle):
+            logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:30 KST) 충족 -> 일봉 마감 파이프라인 실행")
+            return run_pipeline()
+        logger.info(f"[CronTick] 금일 일봉({expected_eval_candle}) 평가 완료 상태 -> 중복 파이프라인 진입 생략")
 
     if cycle_manager.is_any_trailing_active():
         logger.info("[CronTick] 2단계 트레일링 감시 활성 상태 -> 4시간봉 감시 파이프라인 실행")
@@ -433,16 +441,7 @@ def run_cron_tick() -> bool:
 
     # 포지션 미보유/1단계 상태에서도 매시 첫 5분 틱(0~7분)마다 4시간봉 추세 상태를 대시보드에 동기화
     if kst_now.minute < 8:
-        try:
-            df_4h_sync = bitget_client.fetch_ohlcv(TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)
-            if df_4h_sync is not None and not df_4h_sync.empty and len(df_4h_sync) >= MIN_4H_CANDLES:
-                ind_4h = IndicatorCalculator.calculate_4h(df_4h_sync)
-                c_4h = float(ind_4h.get("eval_close", 0.0) or 0.0)
-                m_4h = float(ind_4h.get("sma5", 0.0) or 0.0)
-                if c_4h > 0 and m_4h > 0:
-                    cycle_manager.update_trend_riding(is_active=(c_4h >= m_4h), prev_close_4h=c_4h, ma5_4h=m_4h)
-        except Exception as e_4h:
-            logger.warning(f"[CronTick] 4시간봉 추세 상태 동기화 생략: {e_4h}")
+        sync_4h_trend_state(context_label="CronTick")
 
     logger.info("[CronTick] 2단계 트레일링 미활성 및 일봉 평가 시간대 아님 -> 즉시 종료")
     return True

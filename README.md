@@ -754,3 +754,18 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/cycle_manager.py` 오류 0건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/cycle_manager.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
 
+## [2026-11-03 13:37] 업데이트 이력 (Commit ID: 8b58a17)
+- **수정 내용**:
+  - **4시간봉 대시보드 추세 상태 동기화(`trend_riding`) 인자 및 반환 키 매핑 버그 수정 (`main.py`, `strategy/indicator.py`, `manager/trader.py`)**:
+    - `main.py`: `sync_4h_trend_state()` 헬퍼 함수를 신설하여 `bitget_client.fetch_ohlcv(symbol=SYMBOL, timeframe=TIMEFRAME_4H, limit=CANDLE_LIMIT_4H)`로 명시적 키워드 인자를 전달하도록 수정 (`bitget does not have market symbol 4h` 예외 해결) 및 `run_pipeline()`과 `run_cron_tick()`의 중복 동기화 코드를 통합
+    - `strategy/indicator.py`: `IndicatorCalculator.calculate_4h()` 반환 딕셔너리에 `closed_close`/`closed_sma5_4h` 외에 하위 호환용 `eval_close`/`sma5` 별칭 키 추가
+    - `manager/trader.py`: `process_stage2_monitoring()`에서 4시간봉 완성봉 종가(`closed_close`) 및 5MA(`closed_sma5_4h`)를 명시적으로 우선 참조하여 `update_trend_riding()` 호출
+  - **09:18~09:28 KST 크론 틱 중복 일봉 파이프라인 진입 최적화 (`main.py`)**:
+    - `run_cron_tick()`에서 일봉 마감 평가 시간대(`09:10~09:30 KST`) 진입 시 당일 평가 대상 완성봉(`expected_eval_candle`)의 평가 완료 여부(`cycle_manager.is_daily_evaluated()`)를 사전 확인
+    - `09:13 KST`에 이미 일봉 평가가 정상 완료된 경우 `09:18`, `09:23`, `09:28 KST` 틱에서 `run_pipeline()` 중복 진입(불필요한 거래소 설정·일봉 수집·포지션 대조 API 호출)을 생략하고, 당일 2단계 트레일링 진입 시 지체 없이 즉시 `run_stage2_pipeline()` 감시로 이어지도록 개선 (`09:13 KST` 실패 시 `09:18 KST` 자동 재시도 기능은 그대로 유지)
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile strategy/indicator.py manager/trader.py main.py` 오류 0건 통과
+  - 단위 시나리오 테스트(4시간봉 지표 키 매핑, `sync_4h_trend_state` 인자 전달, `09:18 KST` 중복 진입 생략 및 재시도 분기) 3건 전체 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/`) SCP 파일 전송 및 원격 가상환경 문법 검증 완료
+
+
