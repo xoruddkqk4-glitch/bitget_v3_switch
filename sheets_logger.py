@@ -99,11 +99,11 @@ class SheetsLogger:
         """
         _load_env_file(silent)
         raw_url = (webhook_url or os.getenv("GSHEET_WEBHOOK_URL", "")).strip()
-        if raw_url and not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+        if raw_url and not raw_url.lower().startswith("http"):
             raw_url = f"https://script.google.com/macros/s/{raw_url}/exec"
         self.webhook_url = raw_url
         # 인증 토큰은 소스에 기본값을 두지 않으며 환경변수(GSHEET_AUTH_TOKEN)로만 주입합니다.
-        self.auth_token = (auth_token or os.getenv("GSHEET_AUTH_TOKEN", "")).strip()
+        self.auth_token = auth_token or os.getenv("GSHEET_AUTH_TOKEN", "")
         if self.webhook_url and not self.auth_token and not silent:
             print(f"[{strategy_name}] SheetsLogger: GSHEET_AUTH_TOKEN 환경변수가 없어 시트 전송이 인증 실패(401)로 거부됩니다.")
         self.strategy_name = strategy_name
@@ -167,7 +167,7 @@ class SheetsLogger:
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=max(self.timeout, 10)
+                timeout=max(self.timeout, 30 if self.async_mode else 10)
             )
         except Exception as e:
             self._log(f"시트 전송 지연/오류 (매매 정상 유지, 나중에 재전송): {e}")
@@ -183,7 +183,11 @@ class SheetsLogger:
             return "retry"
         if body.get("status") in ("success", "duplicate"):
             return "ok"
-        self._log(f"시트 응답 에러: {body.get('message')}")
+        msg = str(body.get("message") or "")
+        if body.get("retryable") or body.get("code") in ("LOCK_TIMEOUT", "INTERNAL_ERROR") or "서버 처리 중 오류" in msg or "락" in msg or "잠금" in msg:
+            self._log(f"시트 일시 지연/락 대기 초과 (나중에 재전송): {msg}")
+            return "retry"
+        self._log(f"시트 응답 에러: {msg}")
         return "reject"
 
     def _store(self, item: Dict[str, Any]) -> None:
@@ -558,80 +562,34 @@ class SheetsLogger:
             return False
 
     # ------------------------------------------------------------------
-    # 관리용 원격 호출 (동기, 수동 실행용)
+    # 관리용 작업 안내 (보안 정책상 웹훅 원격 트리거가 비활성화됨 -> GAS 편집기에서 직접 실행)
     # ------------------------------------------------------------------
     def trigger_monthly_archive(self, min_retain_rows: int = 500, target_month: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        [옵션 1] 원장 월별 탭 자동 아카이브 원격 실행
+        [Deprecated] 보안 강화를 위해 ARCHIVE_MONTHLY 웹훅 외부 호출이 비활성화되었습니다.
+        Apps Script 편집기에서 `archiveMonthlyTrades()` 또는 월간 시간 트리거를 사용해 주세요.
         """
-        if not self.webhook_url or requests is None:
-            return None
-        payload = {
-            "token": self.auth_token,
-            "type": "ARCHIVE_MONTHLY",
-            "data": {
-                "options": {
-                    "minRetainRows": min_retain_rows,
-                    "targetMonth": target_month
-                }
-            }
-        }
-        try:
-            http_client = self._session or requests
-            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
-            if resp.status_code == 200:
-                return resp.json()
-            return None
-        except Exception as e:
-            if not self.silent:
-                print(f"[{self.strategy_name}] 월별 아카이브 요청 실패: {e}")
-            return None
+        if not self.silent:
+            print(f"[{self.strategy_name}] 안내: 월별 아카이브는 보안상 Apps Script 편집기(archiveMonthlyTrades) 또는 GAS 트리거에서만 실행됩니다.")
+        return None
 
     def trigger_yearly_sharding(self, target_year: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        [옵션 4] 원장 연도별 파일 분리 (샤딩) 원격 실행
+        [Deprecated] 보안 강화를 위해 SHARD_YEARLY 웹훅 외부 호출이 비활성화되었습니다.
+        Apps Script 편집기에서 `shardYearlyArchiveSpreadsheet()`를 직접 실행해 주세요.
         """
-        if not self.webhook_url or requests is None:
-            return None
-        payload = {
-            "token": self.auth_token,
-            "type": "SHARD_YEARLY",
-            "data": {
-                "year": target_year
-            }
-        }
-        try:
-            http_client = self._session or requests
-            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
-            if resp.status_code == 200:
-                return resp.json()
-            return None
-        except Exception as e:
-            if not self.silent:
-                print(f"[{self.strategy_name}] 연도별 샤딩 요청 실패: {e}")
-            return None
+        if not self.silent:
+            print(f"[{self.strategy_name}] 안내: 연도별 샤딩은 보안상 Apps Script 편집기(shardYearlyArchiveSpreadsheet)에서만 실행됩니다.")
+        return None
 
     def diagnose_capacity(self) -> Optional[Dict[str, Any]]:
         """
-        원장 용량 및 건강도 진단 원격 조회
+        [Deprecated] 보안 강화를 위해 DIAGNOSE 웹훅 외부 호출이 비활성화되었습니다.
+        Apps Script 편집기에서 `runFullDiagnostic()`을 직접 실행해 주세요.
         """
-        if not self.webhook_url or requests is None:
-            return None
-        payload = {
-            "token": self.auth_token,
-            "type": "DIAGNOSE",
-            "data": {}
-        }
-        try:
-            http_client = self._session or requests
-            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-            return None
-        except Exception as e:
-            if not self.silent:
-                print(f"[{self.strategy_name}] 원장 용량 진단 실패: {e}")
-            return None
+        if not self.silent:
+            print(f"[{self.strategy_name}] 안내: 용량 진단은 보안상 Apps Script 편집기(runFullDiagnostic)에서만 실행됩니다.")
+        return None
 
 
 if __name__ == "__main__":

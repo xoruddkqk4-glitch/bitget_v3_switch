@@ -768,4 +768,15 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 단위 시나리오 테스트(4시간봉 지표 키 매핑, `sync_4h_trend_state` 인자 전달, `09:18 KST` 중복 진입 생략 및 재시도 분기) 3건 전체 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/`) SCP 파일 전송 및 원격 가상환경 문법 검증 완료
 
+## [2026-11-06 10:52] 업데이트 이력 (Commit ID: 6baa2bd)
+- **수정 내용**:
+  - **구글 시트 로거(`SheetsLogger`) 비동기 타임아웃 상향 및 GAS 락/일시 오류 재시도 분류 고도화 (`sheets_logger.py`)**:
+    - `_send_now()` HTTP 타임아웃을 비동기 워커 모드(`async_mode=True`)에서 최소 `30초`(`max(self.timeout, 30 if self.async_mode else 10)`)로 상향하여 GAS 동시성 락 대기 구간에서도 응답 단절 없이 안정적으로 처리되도록 개선
+    - GAS 응답 본문에 `retryable=True`, `code in ("LOCK_TIMEOUT", "INTERNAL_ERROR")` 또는 메시지에 `"서버 처리 중 오류"`, `"락"`, `"잠금"`이 포함된 경우 영구 거부(`reject`) 대신 `"retry"`를 반환하여 로컬 Outbox 큐에 안전하게 보관 후 백그라운드 재전송 수행
+    - 웹훅 URL 프리픽스 검사 대소문자 호환(`raw_url.lower().startswith("http")`) 및 인증 토큰 로딩 로직 정리
+  - **보안 정책 강화에 따른 원격 관리 웹훅 트리거 비활성화 (`sheets_logger.py`)**:
+    - `trigger_monthly_archive()`, `trigger_yearly_sharding()`, `diagnose_capacity()`에서 외부 웹훅(`ARCHIVE_MONTHLY`, `SHARD_YEARLY`, `DIAGNOSE`) 호출을 중단하고 Apps Script 편집기 또는 GAS 시간 트리거에서 직접 실행하도록 안내 메시지 출력 후 `None` 반환으로 전환
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py` 오류 0건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/sheets_logger.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
 
