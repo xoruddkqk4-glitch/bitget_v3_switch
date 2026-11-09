@@ -780,3 +780,12 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile sheets_logger.py` 오류 0건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/sheets_logger.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
 
+## [2026-11-09 21:50] 업데이트 이력 (Commit ID: e3cb085)
+- **수정 내용**:
+  - **더미 진입(`BUY_DUMMY`) 기록 시 현재가(`current_price`) 반영 (`manager/trader.py`)**:
+    - 당일 청산 후 신규 싸이클 1차 더미 이관(`cleared_today`) 및 일반 1·2차 더미 방어 진입(`action_type == "DUMMY"`) 시 `self.excel.append_record()`의 `price` 인자에 `None` 대신 `indicators.get("current_price")`를 전달하도록 개선
+    - 로컬 엑셀(`TradeHistory`) 원장 및 구글 시트(`SheetsLogger.log_trade`)의 `BUY_DUMMY` 이벤트에 더미 소진 시점의 기준 현재가가 정확히 기록되도록 보강
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/trader.py` 오류 0건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/trader.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
+
