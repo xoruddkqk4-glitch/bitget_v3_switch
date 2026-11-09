@@ -789,3 +789,17 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/trader.py` 오류 0건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/trader.py`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
 
+## [2026-11-09 22:32] 업데이트 이력 (Commit ID: 7da9ccd)
+- **수정 내용**:
+  - **차수별 더미 소진 상세 이력(`dummy_history`) 영속화 및 구글 시트 `STATE_SYNC` 연동 (`manager/cycle_manager.py`, `manager/trader.py`)**:
+    - `manager/cycle_manager.py`:
+      - `_SYNC_FIELDS`에 `"dummy_history"`를 추가하여 `state.json` 저장 시 구글 시트 대시보드로 차수별 더미 진입 내역이 자동 동기화되도록 확장
+      - 전략 기본 상태(`_default_strategy_state`) 및 기존 상태 로드 시 `dummy_history: []` 기본값 보정 추가
+      - `consume_dummy(strategy_name, date_str, price=0.0, note="")`: 더미 소진 시 차수(`level`), 일시(`date`), 진입 기준가(`price`), 사유(`note`)를 `dummy_history` 배열에 누적/갱신하도록 개선
+      - 반대 포지션 실매수 시 더미 초기화(`reset_dummy_if_no_position`) 및 싸이클 초기화(`reset_cycle`) 시 `dummy_history`도 함께 초기화하도록 반영
+    - `manager/trader.py`:
+      - 당일 청산 후 1차 더미 이관(`cleared_today`) 및 일반 더미 진입(`action_type == "DUMMY"`) 시 `consume_dummy()`에 `price=float(indicators.get("current_price") or 0.0)`와 진입 사유(`note`)를 함께 전달하도록 연동
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/cycle_manager.py manager/trader.py` 오류 0건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
+

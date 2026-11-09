@@ -642,7 +642,12 @@ class Trader:
 
         if cleared_today:
             # PRD 명세: 청산 완료 당일 발생한 신호는 신규 싸이클의 1차 더미로 이관 (cycle_id 추가 증가 없음)
-            self.cycles.consume_dummy(strategy_name, date_str=date_str)
+            self.cycles.consume_dummy(
+                strategy_name,
+                date_str=date_str,
+                price=float(indicators.get("current_price") or 0.0),
+                note=f"{entry_reason} (당일 청산 후 신규 싸이클 1차 더미로 이관)"
+            )
             self.excel.append_record(
                 date_str=date_str,
                 strategy_name=strategy_name,
@@ -688,7 +693,12 @@ class Trader:
             return
 
         if action_type == "DUMMY":
-            dummy_count = self.cycles.consume_dummy(strategy_name, date_str=date_str)
+            dummy_count = self.cycles.consume_dummy(
+                strategy_name,
+                date_str=date_str,
+                price=float(indicators.get("current_price") or 0.0),
+                note=f"{entry_reason} (더미 방어 진입)"
+            )
             self.excel.append_record(
                 date_str=date_str,
                 strategy_name=strategy_name,

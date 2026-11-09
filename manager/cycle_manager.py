@@ -30,7 +30,7 @@ KST = timezone(timedelta(hours=9))
 #  - 직전에 보낸 내용과 같으면 보내지 않고, 연속 전송 사이에는 최소 10초 간격을 둡니다(최신값만 전송).
 # ---------------------------------------------------------------------
 _SYNC_FIELDS = (
-    "total_qty", "avg_price", "executed_units", "dummy_count", "cycle_id",
+    "total_qty", "avg_price", "executed_units", "dummy_count", "dummy_history", "cycle_id",
     "trailing_mode", "trailing_base_price", "trailing_target_price",
     "cumulative_realized_pnl", "last_action", "last_action_date",
 )
@@ -198,6 +198,7 @@ class CycleManager:
         state = {
             "cycle_id": 1,
             "dummy_count": 0,
+            "dummy_history": [],
             "executed_units": 0,
             "avg_price": 0.0,
             "total_qty": 0.0,
@@ -239,6 +240,7 @@ class CycleManager:
                         data[strat] = self._default_strategy_state(is_long=is_l)
                     else:
                         # 신규 필드 기본값 보정
+                        data[strat].setdefault("dummy_history", [])
                         data[strat].setdefault("trailing_mode", False)
                         data[strat].setdefault("trailing_base_price", 0.0)
                         data[strat].setdefault("trailing_target_price", 0.0)
@@ -335,12 +337,24 @@ class CycleManager:
             # 5회차 이상 (executed_units >= 4) -> 1.25x
             return "REAL_BUY", WEIGHT_BOOST, f"실제 {current_unit_seq}회차 ({WEIGHT_BOOST:.2f}x)"
 
-    def consume_dummy(self, strategy_name: str, date_str: str) -> int:
-        """더미 카운트를 1 증가시키고 상태를 저장합니다."""
+    def consume_dummy(self, strategy_name: str, date_str: str, price: float = 0.0, note: str = "") -> int:
+        """더미 카운트를 1 증가시키고 차수별 이력(dummy_history)과 상태를 저장합니다."""
         s = self.state[strategy_name]
         s["dummy_count"] = min(s.get("dummy_count", 0) + 1, DUMMY_TARGET)
         s["last_action"] = "BUY_DUMMY"
         s["last_action_date"] = date_str
+        hist = list(s.get("dummy_history") or [])
+        entry = {
+            "level": s["dummy_count"],
+            "date": date_str,
+            "price": round(float(price or 0.0), 4),
+            "note": str(note or "")
+        }
+        if len(hist) >= s["dummy_count"]:
+            hist[s["dummy_count"] - 1] = entry
+        else:
+            hist.append(entry)
+        s["dummy_history"] = hist[:DUMMY_TARGET]
         self._save_state(self.state)
         logger.info(f"[CycleManager] [{strategy_name}] 더미 소진 처리: {s['dummy_count']} / {DUMMY_TARGET}")
         return s["dummy_count"]
@@ -357,6 +371,7 @@ class CycleManager:
         if s.get("executed_units", 0) == 0 and s.get("dummy_count", 0) > 0:
             old_dummy = s["dummy_count"]
             s["dummy_count"] = 0
+            s["dummy_history"] = []
             s["last_action"] = "RESET_DUMMY_ON_OPPOSITE_BUY"
             s["last_action_date"] = date_str
             self._save_state(self.state)
@@ -428,11 +443,13 @@ class CycleManager:
 
         if transfer_to_dummy1:
             s["dummy_count"] = 1
+            s["dummy_history"] = [{"level": 1, "date": date_str, "price": 0.0, "note": "당일 청산 후 1차 더미 이관"}]
             s["last_action"] = "BUY_DUMMY"
             s["last_action_date"] = date_str
             logger.info(f"[CycleManager] [{strategy_name}] 싸이클 #{next_cycle_id} 시작 (당일 청산 후 매수신호 발생으로 1차 더미 이관 처리)")
         else:
             s["dummy_count"] = 0
+            s["dummy_history"] = []
             s["last_action"] = last_action or "SELL_CLEAR"
             s["last_action_date"] = date_str
             desc = "더미 목표가 도달 싸이클 종료" if last_action == "RESET_DUMMY" else "모든 포지션 청산"
