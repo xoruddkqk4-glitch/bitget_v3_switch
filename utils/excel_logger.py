@@ -304,7 +304,7 @@ class ExcelLogger:
             # ----------------------------------------------------
 
             # 청산 이벤트이거나 자동 갱신 요청 시 손익차트 업데이트
-            if auto_update_chart and event_type == "SELL_CLEAR":
+            if auto_update_chart and event_type in ("SELL_CLEAR", "SELL_CLEAR_PARTIAL"):
                 self.update_pnl_chart()
 
         except Exception as e:

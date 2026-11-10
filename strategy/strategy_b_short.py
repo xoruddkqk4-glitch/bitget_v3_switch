@@ -16,6 +16,8 @@ from config import (
     BREAKEVEN_GUARD_ENABLED,
     BREAKEVEN_GUARD_MIN_PCT,
     STAGE2_SIGNAL_MODE,
+    STAGE2_MA_BUFFER_PCT,
+    TIMEFRAME_4H,
     HYBRID_TRAILING_MIN_PNL_PCT
 )
 
@@ -74,6 +76,7 @@ class StrategyBShort(BaseStrategy):
         sma5 = indicators.get('sma5', 0.0)
         is_sma60_rising = indicators.get('is_sma60_rising', False)
         rebound_rate = indicators.get('rebound_rate', 0.0)
+        tf_tag = str(TIMEFRAME_4H).upper()
 
         if is_sma60_rising:
             target_price = sma5 * SHORT_EXIT_RISING_SMA
@@ -87,7 +90,7 @@ class StrategyBShort(BaseStrategy):
                 )
                 return is_met, action, reason, target_price
             action = "ENTER_STAGE2" if is_met else "NONE"
-            reason = f"60일선 상승 중: 일봉 SMA5*0.98 목표가(${target_price:,.2f}) 도달 (2단계 4H 5MA 감시 돌입)"
+            reason = f"60일선 상승 중: 일봉 SMA5*0.98 목표가(${target_price:,.2f}) 도달 (2단계 {tf_tag} 5MA 감시 돌입)"
             return is_met, action, reason, target_price
         else:
             if rebound_rate < REBOUND_THRESHOLD:
@@ -114,7 +117,7 @@ class StrategyBShort(BaseStrategy):
                     action = "ENTER_STAGE2"
                     reason = (
                         f"60일선 하락장 & 완만한 반등({rebound_rate*100:+.1f}% < +30%): SMA5*1.01 목표가(${target_price:,.2f}) 도달 "
-                        f"& 고수익 달성({current_pnl_pct:+.2f}% >= +{HYBRID_TRAILING_MIN_PNL_PCT:.1f}%) → 2단계 4H 5MA 감시 돌입"
+                        f"& 고수익 달성({current_pnl_pct:+.2f}% >= +{HYBRID_TRAILING_MIN_PNL_PCT:.1f}%) → 2단계 {tf_tag} 5MA 감시 돌입"
                     )
                     return True, action, reason, target_price
 
@@ -157,37 +160,47 @@ class StrategyBShort(BaseStrategy):
         trailing_base_price: float,
         buffer_pct: float = 0.002,
         trailing_activated_ts: int = 0,
-        signal_mode: str = STAGE2_SIGNAL_MODE
+        signal_mode: str = STAGE2_SIGNAL_MODE,
+        ma_buffer_pct: float = STAGE2_MA_BUFFER_PCT
     ) -> Tuple[bool, str]:
         """
         숏 2단계 트레일링 매도 평가 (5분 주기 감시):
         1) 최소 이익 보존선 상회 (실시간가, 매 5분): current_price >= trailing_base_price * (1.0 + buffer_pct)
-        2) 4시간봉 5MA 상향 돌파:
-           - closed_candle(기본): 트레일링 돌입 이후 마감된 4H 완성봉 종가 > 완성봉 SMA5
-           - realtime: current_price > 진행 중 캔들 포함 SMA5 (기존 방식)
+        2) 1시간봉(또는 설정 타임프레임) 5MA 상향 돌파 (이격 버퍼 ma_buffer_pct 적용으로 낮/주말 수평 횡보 노이즈 방어):
+           - closed_candle(기본): 트레일링 돌입 이후 마감된 완성봉 종가 > 완성봉 SMA5 * (1.0 + ma_buffer_pct)
+           - realtime: current_price > 진행 중 캔들 포함 SMA5 * (1.0 + ma_buffer_pct)
         """
+        tf_raw = str(indicators_4h.get('timeframe') or TIMEFRAME_4H).lower()
+        tf_tag = tf_raw.upper()
+        tf_kr = f"{tf_raw[:-1]}시간봉" if tf_raw.endswith("h") else tf_tag
+
         preservation_ceiling = trailing_base_price * (1.0 + buffer_pct) if trailing_base_price > 0 else 0.0
         if preservation_ceiling > 0 and current_price >= preservation_ceiling:
             return True, f"최소 이익 보존선(${preservation_ceiling:,.2f}) 상회 발생 (익절 방어 숏 청산)"
 
         if signal_mode == "realtime":
-            sma5_4h = indicators_4h.get('sma5_4h', 0.0)
-            if indicators_4h.get('is_above_sma5_4h', current_price > sma5_4h):
-                return True, f"4시간봉 5MA(${sma5_4h:,.2f}) 상향 돌파 발생 (실시간 기준, 하락세 반등 숏 청산)"
-            return False, f"숏 추세 유지 중 [실시간] (현재가: ${current_price:,.2f}, 4H SMA5: ${sma5_4h:,.2f}, 보존선: ${preservation_ceiling:,.2f})"
+            sma5_4h = float(indicators_4h.get('sma5_4h', 0.0) or 0.0)
+            ma_ceil_rt = sma5_4h * (1.0 + ma_buffer_pct) if sma5_4h > 0 else 0.0
+            if ma_ceil_rt > 0 and current_price > ma_ceil_rt:
+                return True, f"{tf_kr} 5MA 돌파 기준(${ma_ceil_rt:,.2f}, 5MA ${sma5_4h:,.2f}) 상향 돌파 발생 (실시간 기준, 하락세 반등 숏 청산)"
+            return False, f"숏 추세 유지 중 [실시간] (현재가: ${current_price:,.2f}, {tf_tag} SMA5: ${sma5_4h:,.2f}, 돌파기준: ${ma_ceil_rt:,.2f}, 보존선: ${preservation_ceiling:,.2f})"
 
         closed_close = float(indicators_4h.get('closed_close', 0.0) or 0.0)
         closed_sma5 = float(indicators_4h.get('closed_sma5_4h', 0.0) or 0.0)
+        closed_ma_ceil = closed_sma5 * (1.0 + ma_buffer_pct) if closed_sma5 > 0 else 0.0
         closed_ts = int(indicators_4h.get('closed_candle_close_ts', 0) or 0)
         closed_dt = indicators_4h.get('closed_candle_close_dt', '')
         is_fresh = closed_ts > int(trailing_activated_ts or 0)
-        if closed_sma5 > 0 and is_fresh and indicators_4h.get('is_closed_above_sma5_4h', False):
-            return True, f"4시간봉 완성봉({closed_dt} 마감) 종가 ${closed_close:,.2f} > 5MA ${closed_sma5:,.2f} 상향 돌파 (하락세 반등 숏 청산)"
+        if closed_ma_ceil > 0 and is_fresh and closed_close > closed_ma_ceil:
+            return True, (
+                f"{tf_kr} 완성봉({closed_dt} 마감) 종가 ${closed_close:,.2f} > 5MA 돌파기준 ${closed_ma_ceil:,.2f} "
+                f"(5MA ${closed_sma5:,.2f} +{ma_buffer_pct*100:g}%) 상향 돌파 (하락세 반등 숏 청산)"
+            )
 
-        wait_txt = "" if is_fresh else " | 트레일링 돌입 이후 마감된 4H봉 대기 중"
+        wait_txt = "" if is_fresh else f" | 트레일링 돌입 이후 마감된 {tf_tag}봉 대기 중"
         return False, (
-            f"숏 추세 유지 중 [완성봉] (현재가: ${current_price:,.2f}, 완성봉 종가: ${closed_close:,.2f}, "
-            f"완성봉 SMA5: ${closed_sma5:,.2f}, 보존선: ${preservation_ceiling:,.2f}{wait_txt})"
+            f"숏 추세 유지 중 [완성봉] (현재가: ${current_price:,.2f}, {tf_tag} 완성봉 종가: ${closed_close:,.2f}, "
+            f"완성봉 SMA5: ${closed_sma5:,.2f}, 돌파기준: ${closed_ma_ceil:,.2f}, 보존선: ${preservation_ceiling:,.2f}{wait_txt})"
         )
 
     def check_exit_signal(
@@ -199,4 +212,3 @@ class StrategyBShort(BaseStrategy):
         """기존 인터페이스 호환용 래퍼 (1차 신호 기준)"""
         is_met, action, reason, target = self.check_stage1_exit_signal(current_price, indicators, cycle_info)
         return is_met, reason, target
-

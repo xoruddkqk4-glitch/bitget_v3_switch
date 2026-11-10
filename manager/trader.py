@@ -10,7 +10,9 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 from config import (
     UNIT_DIVISOR, MAX_EXECUTED_UNITS, MARGIN_SAFETY_RATIO, LEVERAGE, STAGE2_SIGNAL_MODE,
-    PRESERVATION_BUFFER_PCT, MIN_ORDER_USD, PARTIAL_FILL_RATIO, ALERT_COOLDOWN_SEC
+    TIMEFRAME_4H, PRESERVATION_BUFFER_PCT, STAGE2_MA_BUFFER_PCT,
+    STAGE1_PARTIAL_EXIT_PCT, STAGE1_PARTIAL_EXIT_RATIO,
+    MIN_ORDER_USD, PARTIAL_FILL_RATIO, ALERT_COOLDOWN_SEC
 )
 from api.bitget_client import BitgetClient, bitget_client
 from api.exceptions import OrderSkipError
@@ -117,8 +119,8 @@ class Trader:
         action_title: str = "",
         action_detail: str = ""
     ):
-        prev = self.last_eval.get(strategy_name, {})
-        self.last_eval[strategy_name] = {
+        prev = dict(self.last_eval.get(strategy_name, {}))
+        prev.update({
             "signal_met": signal_met,
             "status": status,
             "reason": reason,
@@ -127,7 +129,8 @@ class Trader:
             "exit_reason": exit_reason or prev.get("exit_reason", ""),
             "action_title": action_title or prev.get("action_title", ""),
             "action_detail": action_detail or prev.get("action_detail", ""),
-        }
+        })
+        self.last_eval[strategy_name] = prev
 
 
     def _resolve_close_qty(self, strategy_name: str, state_qty: float) -> float:
@@ -345,19 +348,17 @@ class Trader:
 
 
         if action == "ENTER_STAGE2":
-            # 상승장/과낙폭(과반등) 익절: 즉시 청산하지 않고 2단계 4H 5MA 감시 모드 활성화
-            # 보존선(base_price)은 수식 목표가(target_price)와 당시 실제 체결 가능 가격(current_price) 중
-            # 더 유리한 가격(롱: max, 숏: min)을 기준으로 설정하여, 오리지널 청산 시점의 수익을 하한선으로 방어
-            effective_base = max(current_price, target_price) if cfg["direction"] > 0 else min(current_price, target_price)
-            self.cycles.set_trailing_mode(
+            # 1단계 목표가 달성:
+            # 1) 보유 포지션의 50%(STAGE1_PARTIAL_EXIT_RATIO)를 매도 시점 현재가에 즉시 시장가 선(先)익절
+            # 2) 남은 50% 물량은 2단계 4H 5MA 감시 모드로 전환하며, 최저보존선은 1차 목표 매도가(target_price)로 설정
+            return self._execute_stage1_partial_and_enter_stage2(
                 strategy_name=strategy_name,
+                current_price=current_price,
                 target_price=target_price,
-                base_price=effective_base,
-                reason=exit_reason,
-                date_str=date_str
+                exit_reason=exit_reason,
+                date_str=date_str,
+                execution_logs=execution_logs
             )
-            execution_logs.append(f"🟡 [{label} 2단계 트레일링 돌입] {exit_reason} (최소보존선: ${effective_base:,.2f})")
-            return False
 
         if action == "IMMEDIATE_EXIT":
             logger.info(f"[Trader] [{strategy_name}] {label} 즉시 전량 청산 충족! 사유: {exit_reason}")
@@ -383,6 +384,219 @@ class Trader:
 
         return False
 
+    def _execute_stage1_partial_and_enter_stage2(
+        self,
+        strategy_name: str,
+        current_price: float,
+        target_price: float,
+        exit_reason: str,
+        date_str: str,
+        execution_logs: List[str]
+    ) -> bool:
+        """
+        1단계 익절 조건(ENTER_STAGE2) 통과 시:
+        1) 보유 수량의 설정 비율(STAGE1_PARTIAL_EXIT_PCT, 기본 50%)을 현재가에 즉시 시장가 익절
+        2) 잔여 비율(100 - STAGE1_PARTIAL_EXIT_PCT)은 최저보존선을 1차 목표가(target_price)로 설정하여 2단계 4H 5MA 트레일링 감시 돌입
+        (단, 설정 비율이 0% 이하이거나 분할 주문금액/잔여 평가금액이 최소주문금액 미만인 소액 포지션은 분할 없이 전량 2단계 돌입,
+         100% 이상이면 1단계에서 즉시 전량 청산)
+        Returns: 전량 청산 여부 (일반적으로 잔여 물량이 남으므로 False)
+        """
+        cfg = SIDE_CFG[strategy_name]
+        label = cfg["label"]
+        state = self.cycles.get_strategy_state(strategy_name)
+        avg_price = float(state.get("avg_price", 0.0))
+        state_qty = float(state.get("total_qty", 0.0))
+        close_qty = self._resolve_close_qty(strategy_name, state_qty)
+        effective_base = float(target_price)
+
+        exit_pct = float(STAGE1_PARTIAL_EXIT_PCT)
+        exit_ratio = exit_pct / 100.0
+        remain_pct = max(0.0, 100.0 - exit_pct)
+        exit_pct_str = f"{exit_pct:g}%"
+        remain_pct_str = f"{remain_pct:g}%"
+
+        if close_qty <= 0:
+            logger.warning(f"[Trader] [{strategy_name}] 1단계 통과했으나 실제 보유 수량 0 → 싸이클 초기화")
+            self.cycles.reset_cycle(strategy_name, date_str=date_str, transfer_to_dummy1=False)
+            return True
+
+        # 100% 이상 설정 시: 1단계에서 즉시 전량 청산
+        if exit_ratio >= 1.0:
+            closed, log_msg = self._close_position(
+                strategy_name=strategy_name,
+                ref_price=current_price,
+                date_str=date_str,
+                reason=exit_reason,
+                unit_label="STAGE1_ALL_CLEAR",
+                log_title=f"{label} 1단계 전량 익절",
+                target_price=target_price
+            )
+            execution_logs.append(log_msg)
+            return closed
+
+        half_qty = close_qty * exit_ratio
+        remain_qty_est = close_qty - half_qty
+        min_amount = self.client.get_min_amount()
+        can_split = (
+            0.0 < exit_ratio < 1.0
+            and (half_qty * current_price >= MIN_ORDER_USD)
+            and (remain_qty_est * current_price >= MIN_ORDER_USD)
+            and (half_qty >= min_amount)
+            and (remain_qty_est >= min_amount)
+        )
+
+        if not can_split:
+            skip_why = "분할 비율 0% 설정" if exit_ratio <= 0.0 else (
+                f"분할 수량/금액 최소 기준 미달 (총 {close_qty:,.4f} Qty, {exit_pct_str}≈${half_qty * current_price:,.2f} < ${MIN_ORDER_USD:,.2f})"
+            )
+            logger.info(
+                f"[Trader] [{strategy_name}] {label} {skip_why} → 선익절 생략 후 전량 2단계 감시 돌입"
+            )
+            self.cycles.set_trailing_mode(
+                strategy_name=strategy_name,
+                target_price=target_price,
+                base_price=effective_base,
+                reason=exit_reason,
+                date_str=date_str
+            )
+            self.last_eval[strategy_name]["stage1_entered_today"] = True
+            self.last_eval[strategy_name]["trailing_base_price"] = effective_base
+            self.last_eval[strategy_name]["exit_reason"] = (
+                f"1단계 목표가(${target_price:,.2f}) 도달 → 전량 2단계 감시 돌입 (최저보존선 ${effective_base:,.2f})"
+            )
+            execution_logs.append(f"🟡 [{label} 2단계 트레일링 돌입] {exit_reason} (최저보존선: ${effective_base:,.2f})")
+            return False
+
+        # 1) 설정 비율(exit_pct_str) 시장가 선익절 주문 및 체결 확인
+        logger.info(
+            f"[Trader] [{strategy_name}] {label} 1단계 목표가 도달 → {exit_pct_str} 선익절 주문 집행 "
+            f"(요청 {half_qty:,.4f} / 총 {close_qty:,.4f} Qty @ ${current_price:,.2f})"
+        )
+        result = self.client.create_hedge_order(
+            side=cfg["close_side"],
+            amount=half_qty,
+            pos_side=cfg["pos_side"],
+            is_close=True,
+            ref_price=current_price
+        )
+        fill_price = result.average if result.average > 0 else current_price
+        filled = result.filled
+        direction = cfg["direction"]
+
+        if avg_price > 0:
+            pnl_usd = (fill_price - avg_price) * filled * direction - result.fee
+            pnl_pct = ((fill_price / avg_price) - 1.0) * 100.0 * direction
+        else:
+            pnl_usd = -result.fee
+            pnl_pct = 0.0
+
+        # 2) 실현손익 반영 및 보유 수량 차감
+        self.cycles.record_cycle_realized_pnl(strategy_name, pnl_usd, pnl_pct)
+        self.cycles.reduce_position(strategy_name, filled, date_str)
+        rem_qty = float(self.cycles.get_strategy_state(strategy_name).get("total_qty", 0.0))
+
+        # 만약 전량이 체결되어 잔량이 없는 예외 케이스라면 싸이클 초기화
+        if rem_qty <= 0 or filled >= close_qty * PARTIAL_FILL_RATIO:
+            self.excel.append_record(
+                date_str=date_str,
+                strategy_name=strategy_name,
+                event_type="SELL_CLEAR",
+                price=fill_price,
+                qty=filled,
+                unit_label="STAGE1_ALL_CLEAR",
+                dummy_status="0 / 2",
+                total_balance=self.last_total_balance,
+                note=f"1단계 청산 전량 체결: {exit_reason} (손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%, 수수료: ${result.fee:,.4f})",
+                realized_pnl=pnl_usd,
+                pnl_pct=pnl_pct
+            )
+            self.cycles.reset_cycle(strategy_name, date_str=date_str, transfer_to_dummy1=False)
+            self.last_eval[strategy_name]["cleared"] = True
+            self.last_eval[strategy_name]["cleared_type"] = "익절" if pnl_usd >= 0 else "손절"
+            self.last_eval[strategy_name]["cleared_pnl_usd"] = pnl_usd
+            self.last_eval[strategy_name]["cleared_pnl_pct"] = pnl_pct
+            self.last_eval[strategy_name]["cleared_qty"] = filled
+            self.last_eval[strategy_name]["cleared_price"] = fill_price
+            return True
+
+        # 3) 잔여 물량(remain_pct_str)에 대해 2단계 트레일링 활성화 (최저보존선 = 1차 목표 매도가 target_price)
+        self.cycles.set_trailing_mode(
+            strategy_name=strategy_name,
+            target_price=target_price,
+            base_price=effective_base,
+            reason=exit_reason,
+            date_str=date_str
+        )
+
+        # 4) 엑셀 및 구글 시트 기록 (SELL_CLEAR_PARTIAL → close_all=False, 차트 손익 합산)
+        note = (
+            f"1단계 {exit_pct_str} 선익절 및 잔여 {remain_pct_str} 2단계 감시 돌입: {exit_reason} "
+            f"(목표보존선: ${effective_base:,.2f}, 잔여: {rem_qty:,.4f} Qty, "
+            f"손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%, 수수료: ${result.fee:,.4f})"
+        )
+        self.excel.append_record(
+            date_str=date_str,
+            strategy_name=strategy_name,
+            event_type="SELL_CLEAR_PARTIAL",
+            price=fill_price,
+            qty=filled,
+            unit_label=f"STAGE1_{exit_pct:g}PCT_CLEAR",
+            dummy_status="2 / 2",
+            total_balance=self.last_total_balance,
+            note=note,
+            realized_pnl=pnl_usd,
+            pnl_pct=pnl_pct
+        )
+
+        # 5) 일봉 보고서 및 상태 반영
+        self.last_eval[strategy_name]["stage1_half_cleared"] = True
+        self.last_eval[strategy_name]["stage1_exit_pct_str"] = exit_pct_str
+        self.last_eval[strategy_name]["stage1_remain_pct_str"] = remain_pct_str
+        self.last_eval[strategy_name]["stage1_half_pnl_usd"] = pnl_usd
+        self.last_eval[strategy_name]["stage1_half_pnl_pct"] = pnl_pct
+        self.last_eval[strategy_name]["stage1_half_qty"] = filled
+        self.last_eval[strategy_name]["stage1_half_price"] = fill_price
+        self.last_eval[strategy_name]["stage1_remain_qty"] = rem_qty
+        self.last_eval[strategy_name]["trailing_base_price"] = effective_base
+        self.last_eval[strategy_name]["exit_reason"] = (
+            f"1단계 목표가(${target_price:,.2f}) 도달 → {exit_pct_str} 즉시 익절(체결가 ${fill_price:,.2f}, "
+            f"확정손익 {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%) & 잔여 {remain_pct_str}({rem_qty:,.4f} Qty) 2단계 감시 돌입(최저보존선 ${effective_base:,.2f})"
+        )
+
+        msg = (
+            f"🟢 [{label} 1단계 {exit_pct_str} 익절 & 2단계 돌입] {exit_reason} "
+            f"({exit_pct_str} 체결: {filled:,.4f} Qty @ ${fill_price:,.2f}, 손익: {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}% | "
+            f"잔여 {remain_pct_str}: {rem_qty:,.4f} Qty, 최저보존선: ${effective_base:,.2f})"
+        )
+        execution_logs.append(msg)
+
+        # 6) 텔레그램 단독 알림 발송
+        tf_tag = str(TIMEFRAME_4H).upper()
+        pnl_type = "익절" if pnl_usd > 0 else ("손절" if pnl_usd < 0 else "본탈")
+        pnl_emoji = "🎉" if pnl_usd > 0 else ("⚪" if pnl_usd == 0 else "⚠️")
+        kst_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+        unit_base = self.last_total_balance / UNIT_DIVISOR
+        half_notif = (
+            f"<b>{pnl_emoji} [Bitget V3 Switch 1단계 {label} {exit_pct_str} {pnl_type} 및 2단계 감시 돌입]</b>\n\n"
+            f"• <b>체결 일시:</b> {kst_str}\n"
+            f"• <b>종목:</b> {self.client.symbol}\n"
+            f"• <b>달성 사유:</b> {self._escape(exit_reason)}\n"
+            f"• <b>1단계 {exit_pct_str} 체결:</b> {filled:,.4f} Qty @ ${fill_price:,.2f} (수수료 ${result.fee:,.4f})\n"
+            f"• <b>확정 손익({exit_pct_str}):</b> <b>{pnl_usd:+,.2f} USD ({pnl_pct:+.2f}%)</b>\n"
+            f"• <b>잔여 포지션({remain_pct_str}):</b> {rem_qty:,.4f} Qty (평단 ${avg_price:,.2f})\n"
+            f"• <b>2단계 매도 기준:</b> {tf_tag} 5MA(이격 {STAGE2_MA_BUFFER_PCT*100:g}%) 이탈 또는 최저보존선(${effective_base:,.2f}) 이탈 시 잔량 청산\n"
+            f"• <b>계좌 잔고:</b> ${self.last_total_balance:,.2f} (1.0 Unit: ${unit_base:,.2f})"
+        )
+        self.notifier.send_message(half_notif)
+
+        # 7) 분할 청산으로 늘어난 가용 잔고 재조회 (반대편 헤지 유닛 산정 정확도 향상)
+        try:
+            self._refresh_balance()
+        except Exception as e:
+            logger.warning(f"[Trader] 1단계 {exit_pct_str} 청산 후 잔고 재조회 실패 (이전 잔고 값 유지): {e}")
+
+        return False
+
     def _handle_trailing_ratchet(
         self,
         strategy_name: str,
@@ -396,7 +610,7 @@ class Trader:
     ):
         """
         트레일링 감시 중 일봉 재평가 처리:
-        - ENTER_STAGE2 신규 목표가/현재가가 기존 보존선보다 유리할 때만 보존선 갱신 (롱 상향 / 숏 하향)
+        - ENTER_STAGE2 신규 1차 목표가(target_price)가 기존 보존선보다 유리할 때만 보존선 갱신 (롱 상향 / 숏 하향)
         - IMMEDIATE_EXIT / NONE / 불리한 목표가는 무시 (보존선 유지, 청산은 4H 감시가 담당)
         """
         cfg = SIDE_CFG[strategy_name]
@@ -405,9 +619,7 @@ class Trader:
             logger.info(f"[Trader] [{strategy_name}] {label} 트레일링 감시 중 - 일봉 재평가 결과 무시 ({action}: {exit_reason})")
             return
 
-        candidate_base = (
-            max(current_price, target_price) if cfg["direction"] > 0 else min(current_price, target_price)
-        ) if current_price > 0 else target_price
+        candidate_base = float(target_price)
 
         improved, old_base, new_base = self.cycles.ratchet_trailing_base(
             strategy_name, candidate_base, exit_reason, date_str
@@ -591,13 +803,36 @@ class Trader:
         total_qty = float(state.get("total_qty", 0.0))
 
         if state.get("trailing_mode", False):
-            reason = "2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+            tf_tag = str(TIMEFRAME_4H).upper()
+            eval_data = self.last_eval.get(strategy_name, {})
+            if eval_data.get("stage1_half_cleared"):
+                exit_pct_str = eval_data.get("stage1_exit_pct_str", f"{STAGE1_PARTIAL_EXIT_PCT:g}%")
+                remain_pct_str = eval_data.get("stage1_remain_pct_str", f"{max(0.0, 100.0 - STAGE1_PARTIAL_EXIT_PCT):g}%")
+                reason = f"금일 1단계 {exit_pct_str} 익절 및 2단계 감시 돌입 (신규 진입 스킵)"
+                pnl_usd = eval_data.get("stage1_half_pnl_usd", 0.0)
+                pnl_pct = eval_data.get("stage1_half_pnl_pct", 0.0)
+                half_qty = eval_data.get("stage1_half_qty", 0.0)
+                base_p = eval_data.get("trailing_base_price", state.get("trailing_base_price", 0.0))
+                action_title = f"[1단계 {exit_pct_str} 익절 완료] ({pnl_pct:+.2f}%) → 잔여 {remain_pct_str} 2단계 감시"
+                action_detail = (
+                    f"{exit_pct_str}({half_qty:,.4f} Qty, {pnl_usd:+,.2f} USD) 확정 익절 후 "
+                    f"잔여 {remain_pct_str}({total_qty:,.4f} Qty) {tf_tag} 5MA 감시 (최저보존선 ${base_p:,.2f})"
+                )
+            elif eval_data.get("stage1_entered_today"):
+                reason = "금일 1단계 목표 도달로 2단계 감시 돌입 (신규 진입 스킵)"
+                base_p = eval_data.get("trailing_base_price", state.get("trailing_base_price", 0.0))
+                action_title = "1단계 목표 도달 → 2단계 트레일링 감시 돌입"
+                action_detail = f"기존 포지션({total_qty:,.4f} Qty) {tf_tag} 5MA 감시 전환 (최저보존선 ${base_p:,.2f})"
+            else:
+                reason = "2단계 트레일링 감시 진행 중 (신규 진입 스킵)"
+                action_title = "트레일링 감시 중 (매매 없음)"
+                action_detail = f"{tf_tag} 5MA 2단계 매도 감시 유지"
             logger.info(f"[Trader] [{strategy_name}] {reason}")
             self._set_eval(
-                strategy_name, False, "TRAILING_ACTIVE", reason, "🟡 2단계 트레일링 감시 진행 중 (신규 진입 스킵)",
+                strategy_name, False, "TRAILING_ACTIVE", reason, f"🟡 {action_title}",
                 entry_reason=reason,
-                action_title="트레일링 감시 중 (매매 없음)",
-                action_detail="4시간봉 2단계 매도 감시 유지"
+                action_title=action_title,
+                action_detail=action_detail
             )
             return
 
@@ -906,7 +1141,8 @@ class Trader:
                     trailing_base_price=state.get("trailing_base_price", 0.0),
                     buffer_pct=PRESERVATION_BUFFER_PCT,
                     trailing_activated_ts=int(state.get("trailing_activated_ts", 0) or 0),
-                    signal_mode=STAGE2_SIGNAL_MODE
+                    signal_mode=STAGE2_SIGNAL_MODE,
+                    ma_buffer_pct=STAGE2_MA_BUFFER_PCT
                 )
                 if not exit_met:
                     logger.info(f"[Trader 4H] [{name}] {label} 2단계 유지: {reason_2}")

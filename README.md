@@ -803,3 +803,21 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile manager/cycle_manager.py manager/trader.py` 오류 0건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/manager/`) SCP 파일 전송 및 원격 가상환경 구문 검증 완료
 
+
+## [2026-11-10 11:47] 업데이트 이력 (Commit ID: 6923b9f)
+- **수정 내용**:
+  - **1단계 매도 기준(`ENTER_STAGE2`) 통과 시 설정 비율(`STAGE1_PARTIAL_EXIT_PCT`, 기본 50%) 선(先)익절 및 잔여 물량 2단계 트레일링 전환 (`config.py`, `manager/trader.py`, `utils/excel_logger.py`)**:
+    - `config.py`: `STAGE1_PARTIAL_EXIT_PCT = float(os.getenv("STAGE1_PARTIAL_EXIT_PCT", "50.0"))` 및 `STAGE1_PARTIAL_EXIT_RATIO` 상수 신설 (0% 설정 시 분할 없이 전량 2단계 감시, 100% 설정 시 1단계 전량 즉시 익절 지원)
+    - `manager/trader.py`: `_execute_stage1_partial_and_enter_stage2()` 메서드를 구현하여 1단계 통과 시 보유 수량의 설정 비율(기본 50%)을 매도 판정 시점 현재가(`current_price`)로 즉시 시장가 청산하고, 실현손익 누적(`record_cycle_realized_pnl`) 및 보유 수량 차감(`reduce_position`) 수행
+    - 잔여 물량(기본 50%)에 대해서는 **원래의 1차 수식 목표가(`target_price`)를 최저보존선(`trailing_base_price`)으로 설정**하여 2단계 감시 돌입 (일봉 재평가 래칫 갱신 시에도 신규 1차 목표가 기준으로 유리한 방향 갱신)
+    - 소액 포지션 안전 가드: 분할 주문금액 또는 잔여 평가금액이 거래소 최소 주문금액(`MIN_ORDER_USD = $5.0`) 미만인 경우 주문 거절 방지를 위해 분할 없이 전량 2단계 감시로 전환
+    - 엑셀 및 구글 시트 원장에 `SELL_CLEAR_PARTIAL`(`STAGE1_{N}PCT_CLEAR`, `close_all=False`) 기록, 손익차트 시트 즉시 갱신 연동 및 텔레그램 단독 알림·일봉 보고서 동적 `%` 표기 적용
+  - **2단계 추세 감시 타임프레임 `4h` → `1h` (`1H 5MA`) 전환 및 `0.2%` 이격 버퍼(`STAGE2_MA_BUFFER_PCT`) 도입 (`config.py`, `strategy/indicator.py`, `strategy/strategy_a_long.py`, `strategy/strategy_b_short.py`, `manager/cycle_manager.py`, `docs/prd/bitget_v3_switch_prd.md`)**:
+    - `config.py`: `TIMEFRAME_4H = os.getenv("TIMEFRAME_STAGE2", "1h")` 기본값 `"1h"` 적용 및 `STAGE2_MA_BUFFER_PCT = float(os.getenv("STAGE2_MA_BUFFER_PCT", "0.002"))` (`0.2%` 이격 버퍼) 신설
+    - `strategy/indicator.py`: `_timeframe_to_ms()` 헬퍼 함수를 추가하여 `"1h"`(`3,600,000 ms`), `"4h"`(`14,400,000 ms`) 등 설정 타임프레임에 맞춰 완성봉 마감 여부를 정확히 산출하도록 개선
+    - `strategy_a_long.py` / `strategy_b_short.py`: 2단계 추세 이탈 판정 시 1시간봉 완성봉 종가가 `완성봉 SMA5 × (1 ∓ 0.002)`를 이탈할 때 청산하도록 개선하여, 미국 본장 급변동 시 최대 1시간 내 고점 익절과 평일 낮·주말·미국 휴장일 수평 횡보 노이즈(1~2틱 흔들림) 방어를 동시에 달성
+    - `manager/cycle_manager.py`: 대시보드 `STATE_SYNC`(`trend_riding`) 타임프레임 필드에 설정된 `TIMEFRAME_4H`(`"1h"`) 동적 기록
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile config.py strategy/indicator.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/cycle_manager.py manager/trader.py utils/excel_logger.py main.py` 오류 0건 통과
+  - 단위 시나리오 검증(1단계 50% 선익절 및 최저보존선 설정, 1H 완성봉 산출, 수평 횡보 -0.1% 노이즈 홀딩 및 -0.33% 실제 추세 이탈 청산) 전 건 통과
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료

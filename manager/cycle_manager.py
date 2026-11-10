@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 from config import (
-    STATE_FILE, PAPER_TRADING,
+    STATE_FILE, PAPER_TRADING, TIMEFRAME_4H,
     DUMMY_TARGET, WEIGHTED_UNIT_THRESHOLD, WEIGHT_NORMAL, WEIGHT_BOOST, MAX_EXECUTED_UNITS
 )
 from utils.logger import logger
@@ -557,14 +557,14 @@ class CycleManager:
         return bool(a_active or b_active)
 
     def update_trend_riding(self, is_active: bool, prev_close_4h: float, ma5_4h: float):
-        """4시간봉 5MA 기준 상승 추세 상태를 state.json 및 대시보드 STATE_SYNC에 반영합니다."""
+        """2단계 추세 감시(기본 1H 5MA) 기준 상승 추세 상태를 state.json 및 대시보드 STATE_SYNC에 반영합니다."""
         a_trailing = bool(self.state.get("strategy_A", {}).get("trailing_mode", False))
         new_trend = {
             "active": bool(is_active),
             "stage2_active": a_trailing,
             "prev_close_4h": round(float(prev_close_4h or 0.0), 4),
             "ma5_4h": round(float(ma5_4h or 0.0), 4),
-            "timeframe": "4h",
+            "timeframe": str(TIMEFRAME_4H).lower(),
             "ma_period": 5,
         }
         if self.state.get("trend_riding") != new_trend:
