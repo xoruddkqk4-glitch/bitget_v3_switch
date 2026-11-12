@@ -872,3 +872,17 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile main.py config.py api/ls_client.py api/bitget_client.py strategy/indicator.py manager/cycle_manager.py manager/trader.py` 오류 0건, 린트 0건
   - 합성 데이터 검증: 판정 봉 날짜(ET), SMA5 현재가 치환값, `daily_indicators` 스냅샷 JSON, `timestamp` ms 변환(초 단위 버그 발견·수정) 확인
   - EC2 사전 점검: LS 모듈 파일 존재, 원본 `/home/ec2-user/myLS_StockInfo.yaml` 존재 / **봇 루트 yaml 링크 없음, 크론 venv에 `pyyaml`·`yfinance` 미설치** → 실서버 배포 보류 (환경 준비 후 배포 예정)
+
+
+## [2026-11-12 10:15] 업데이트 이력 (Commit ID: 2ff5f0a)
+- **수정 내용**:
+  - **EC2 실서버 LS 신호 경로 배포 및 오늘 봉 누락 버그 수정 (pi/ls_client.py)**:
+    - 서버 준비: 크론 venv에 `pyyaml`·`yfinance==0.2.43` 설치(기존 pandas/numpy/requests/ccxt 버전 변경 없음, pytz 기존 설치), `myLS_StockInfo.yaml` 심볼릭 링크 생성 및 원본 `chmod 600`, 교체 대상 파일·`state.json` 백업(`backups/pre_ls_switch_20261112_010910.tgz`)
+    - 배포 검증 중 발견: 서버 yfinance 0.2.43이 야후 응답 변경으로 실패 → 공통모듈 야후 직접HTTP 폴백에서 오늘 봉의 `close=None` 행이 제거되어 마지막 봉이 전일로 남음 (15:5x ET 평가가 당일 봉 날짜 가드로 매일 생략될 위험)
+    - `fetch_daily_ohlcv`: 마지막 봉이 오늘(ET) 이전이고 평일이면 야후 chart 원본에서 오늘 봉 시가/고가/저가와 `meta.regularMarketPrice` 종가로 보완 (휴장일은 오늘 행이 없어 보완하지 않음 → 날짜 가드가 평가 생략)
+- **검증 결과**:
+  - 로컬·원격 `py_compile` 통과, 업로드 파일 및 LS 공통모듈 MD5 로컬과 일치
+  - EC2 실데이터: 2026-11-11 봉 보완(시가 $64.20), 기준봉 2026-11-11 판정, SMA5 $52.11 / SMA60 $112.72 산출
+  - 임시 복사본(텔레그램·구글시트 비활성)에서 `PAPER_TRADING=true --run-once --force` 정상 종료(exit 0): 신호가(현물) $61.47 / 주문 기준가(Bitget) $61.56 분리, `daily_indicators.source == "LS"` 기록 확인
+  - 실서버 `state.json` 변경 없음(백업과 MD5 일치), 크론 모드라 프로세스 재기동 불필요
+  - 참고: 정규장 외 시간에는 LS 현재가가 시간외 체결가로 응답됨(정규장 종가 $66.03 대비 $61.45) → 15:5x ET 정규장 평가에는 영향 없음
