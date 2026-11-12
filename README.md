@@ -63,7 +63,7 @@
    * 전일 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$)
    * 전일 대비 등락률 $\le -3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \le -0.030$)
 2. **2단계 스마트 트레일링 청산 규칙:**
-   * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
+   * **1단계 확인 (15:54 ~ 15:59 ET, 미국 SOXL 현물 장마감 직전 기준):**
      * **60일선 상승 중:** Target = $SMA_5 \times 1.02$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
      * **60일선 하락 & 완만한 하락 ($\text{낙폭률} > -30\%$):** 현재가가 Target = $SMA_5 \times 0.99$ 이상으로 회복할 때 $\rightarrow$ **즉시 시장가 전량 청산 (반등 시 빠른 본탈)**
      * **60일선 하락 & 과낙폭 ($\text{낙폭률} \le -30\%$):** Target = $SMA_5 \times 1.03$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (과낙폭 반등 추세 감시)
@@ -79,7 +79,7 @@
    * 전일 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$)
    * 전일 대비 등락률 $\ge +3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \ge +0.030$)
 2. **2단계 스마트 트레일링 청산 규칙 (대칭 구조):**
-   * **1단계 확인 (09:10 ~ 09:15 KST, 일봉 마감 기준):**
+   * **1단계 확인 (15:54 ~ 15:59 ET, 미국 SOXL 현물 장마감 직전 기준):**
    * **60일선 상승 중 (단기 눌림):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
    * **60일선 하락 & 완만한 반등 ($\text{반등폭} < +30\%$):** Target = $SMA_5 \times 1.01$ 이하 다다를 때 $\rightarrow$ **즉시 시장가 전량 청산 (빠른 본탈/약손절)**
    * **60일선 하락 & 과반등 후 깊은 눌림 ($\text{반등폭} \ge +30\%$):** Target = $SMA_5 \times 0.97$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (눌림 추세 감시)
@@ -112,7 +112,8 @@ week_00-bitget_v3_switch/
 │
 ├── api/                                   # 거래소 API 연동 계층
 │   ├── __init__.py
-│   └── bitget_client.py                   # ccxt 선물 래퍼 (Hedge Mode, 잔고, OHLCV, 모의매매)
+│   ├── bitget_client.py                   # ccxt 선물 래퍼 (Hedge Mode, 잔고, OHLCV, 모의매매)
+│   └── ls_client.py                       # LS 공통모듈 어댑터 (미국 SOXL 현물 일봉·현재가·개장 판정)
 │
 ├── strategy/                              # 지표 계산 및 A/B 전략 로직
 │   ├── __init__.py
@@ -159,12 +160,26 @@ python main.py --run-once
 ```
 
 ### 3) Crontab 5분 주기 실행 (권장: 1차 평가 + 2차 감시 자동화)
-리눅스/서버 환경의 `crontab -e`에 5분 주기(`*/5 * * * *`)로 등록합니다:
-```bash
-*/5 * * * * cd /path/to/week_00-bitget_v3_switch && /path/to/python main.py --cron >> logs/cron.log 2>&1
+리눅스/서버 환경의 `crontab -e`에 5분 주기(`3-59/5 * * * *`)로 등록합니다:
+```cron
+3-59/5 * * * * cd /var/autobot/bitget_v3_switch && /usr/bin/python3 -u main.py --cron >> /var/autobot/bitget_v3_switch/logs/cron.log 2>&1
 ```
-* **09:10 ~ 09:15 KST:** 일봉 1차 마감 평가 및 매수 진입 파이프라인 1회 가동
-* **그 외 시간대:** 2단계 트레일링 활성 시에만 4시간봉 감시 수행, 비활성 시 **0.1초 즉시 무부하 종료**
+* **15:54 ~ 15:59 ET (미국장 마감 직전, 서머타임 자동):** 일봉 1차 평가 및 매수 진입 파이프라인 1회 가동 (`3-59/5` 기준 15:58 틱, `*/5` 기준 15:55 틱)
+  * `DAILY_SIGNAL_SOURCE=bitget` 롤백 시에는 기존대로 09:10 ~ 09:30 KST
+* **그 외 시간대:** 2단계 트레일링 활성 시에만 1시간봉 감시 수행, 비활성 시 **0.1초 즉시 무부하 종료**
+
+### 3-1) 데이터 흐름 (신호 = 미국 현물 / 주문·2단계 = Bitget 선물)
+| 구분 | 소스 |
+|---|---|
+| 일봉 신호 (시가·종가·SMA5·SMA60·캔들 등락률·전일비·낙폭/반등) | 미국 SOXL 현물 일봉 (`LS_API_Helper_US_new.GetOhlcv(source="yf_auto")`) + LS 현재가 |
+| 판정 봉 | 15:5x ET 조회 시 당일 진행 봉(`iloc[-1]`), 종가는 LS 현재가로 치환 / `candle_date` = ET 거래일(`YYYY-MM-DD`) |
+| 주문 수량·기준가·최소 주문금액·평가손익 | Bitget 선물 현재가 (`bitget_client.fetch_last_price`) |
+| 2단계 1시간봉 5MA 감시·포지션 대조 | Bitget 선물 (변경 없음) |
+
+* 실전 모드에서 LS 일봉 수집 실패 시 Bitget으로 자동 대체하지 않고 중단 + 경보합니다 (신호 소스가 섞이면 SMA 기준이 바뀜).
+* 당일 봉 날짜가 오늘(ET)이 아니면 휴장/데이터 지연으로 보고 평가를 건너뜁니다 (텔레그램 경고 1회).
+* 롤백: `.env`에 `DAILY_SIGNAL_SOURCE=bitget` → 기존 09:10 KST Bitget 1D 경로로 복귀 (코드 변경 불필요).
+* 일봉 평가 지표는 `state.json`의 `daily_indicators`에 기록되어 대시보드 STATE_SYNC로 전송됩니다.
 
 ### 4) 상시 백그라운드 스케줄러 실행 (데몬 모드)
 ```bash
@@ -220,13 +235,31 @@ nano .env
 * `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 입력
 * **`PAPER_TRADING=false`** (실제 주문 집행을 위해 반드시 `false`로 변경!)
 
+### 3-1) LS 설정 파일 링크 (일봉 신호 소스 = LS, 필수)
+`LS_Common_new.py`는 설정 파일(`./myLS_StockInfo.yaml`)과 토큰(`./ls_real_token.json`)을 **현재 작업 폴더 기준 상대경로**로 읽습니다. 크론·수동 실행 모두 반드시 봇 루트에서 실행하세요.
+```bash
+ln -s /home/ec2-user/myLS_StockInfo.yaml /var/autobot/bitget_v3_switch/myLS_StockInfo.yaml
+chmod 600 /home/ec2-user/myLS_StockInfo.yaml
+```
+* 로컬의 `myLS_StockInfo.yaml`·`ls_real_token.json`은 서버로 업로드하지 않습니다 (링크 덮어쓰기 방지, `.gitignore` 등록됨).
+* 크론은 yaml을 읽을 수 있는 `ec2-user` crontab에 등록합니다.
+* 같은 앱키를 쓰는 봇과 토큰 동시 재발급을 피하도록 실행 시각을 분리합니다 (떨사오팔 15:51 / 장기투자 15:52 / v3-switch 15:55 또는 15:58).
+
+배포 전 점검:
+```bash
+cd /var/autobot/bitget_v3_switch
+ls -l myLS_StockInfo.yaml                     # -> /home/ec2-user/myLS_StockInfo.yaml
+python3 -c "import LS_Common_new as c; c.SetChangeMode('REAL'); import LS_API_Helper_US_new as u; print('현재가', u.GetCurrentPrice('SOXL')); print(u.GetOhlcv('US','SOXL',5,source='yf_auto').tail(3)); print('장중', u.IsMarketOpen())"
+PAPER_TRADING=true python3 main.py --run-once --force
+```
+
 ### 4) Crontab 5분 주기 등록
 ```bash
 crontab -e
 ```
 맨 하단에 다음 1줄을 등록합니다 (경로는 `pwd` 및 `which python` 확인값 기준):
 ```cron
-*/5 * * * * cd /home/ubuntu/bitget_v3_switch && /home/ubuntu/bitget_v3_switch/venv/bin/python main.py --cron >> /home/ubuntu/bitget_v3_switch/logs/cron.log 2>&1
+3-59/5 * * * * cd /var/autobot/bitget_v3_switch && /usr/bin/python3 -u main.py --cron >> /var/autobot/bitget_v3_switch/logs/cron.log 2>&1
 ```
 
 ### 5) 로그 실시간 모니터링

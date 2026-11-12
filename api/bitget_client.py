@@ -184,6 +184,24 @@ class BitgetClient:
             logger.error(f"[BitgetClient] OHLCV 수집 실패 ({target_symbol}, {timeframe}): {e}")
             raise
 
+    def fetch_last_price(self, symbol: Optional[str] = None, fallback: Optional[float] = None) -> float:
+        """
+        선물 최신 체결가(ticker last)를 반환합니다. (주문 수량 산출·기준가용)
+        - 실전: 조회 실패 시 DataUnavailableError
+        - 모의: 조회 실패 시 fallback(신호 가격) 반환
+        """
+        target_symbol = symbol or self.symbol
+        try:
+            last = float(self.exchange.fetch_ticker(target_symbol).get('last') or 0.0)
+            if last <= 0:
+                raise ValueError(f"last={last}")
+            return last
+        except Exception as e:
+            if self.paper_trading and fallback and fallback > 0:
+                logger.warning(f"[BitgetClient] [PAPER] {target_symbol} 현재가 조회 실패 ({e}) → 신호 가격 ${fallback:,.2f}로 대체")
+                return float(fallback)
+            raise DataUnavailableError(f"[BitgetClient] {target_symbol} 현재가 조회 실패: {e}") from e
+
     def fetch_account_balance(self) -> Tuple[float, float]:
         """
         계좌의 (총 평가 잔고, 실시간 가용 잔고)를 반환합니다.

@@ -7,6 +7,10 @@ secrets.json
 api_key.json
 config.json
 
+# LS 증권 API 키·토큰
+myLS_StockInfo.yaml
+ls_*_token.json
+
 # Python
 __pycache__/
 *.py[cod]

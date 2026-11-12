@@ -1,16 +1,20 @@
 """
 main.py
 bitget_v3_switch 2단계 스마트 트레일링 자동매매 시스템 메인 엔트리 포인트
-- 일봉 마감 평가: 매일 09:10 ~ 09:15 KST 사이 1회 실행 (Crontab 3-59/5 기준 09:13 틱)
-- 4시간봉 2단계 트레일링 감시: 5분 주기(Crontab 또는 백그라운드 루프) 실행
+- 일봉 신호: 미국 SOXL 현물 일봉(LS 공통모듈, yf_auto) / 주문·포지션·2단계 감시: Bitget 선물
+- 일봉 마감 평가: 미국 정규장 마감 직전 15:54 ~ 15:59 ET 사이 1회 실행 (Crontab 3-59/5 기준 15:58 틱, */5 기준 15:55 틱)
+  (DAILY_SIGNAL_SOURCE=bitget 롤백 시: 기존 Bitget 1D 캔들, 09:10 ~ 09:30 KST)
+- 1시간봉 2단계 트레일링 감시: 5분 주기(Crontab 또는 백그라운드 루프) 실행
 - 실전 모드(PAPER_TRADING=false)에서는 모의 데이터/모의 잔고로 절대 매매하지 않습니다.
 """
 
 import argparse
+import math
 import sys
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict
+from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -20,6 +24,12 @@ from config import (
     CANDLE_LIMIT,
     TIMEFRAME_4H,
     CANDLE_LIMIT_4H,
+    DAILY_SIGNAL_SOURCE,
+    US_SYMBOL,
+    LS_OHLCV_LIMIT,
+    DAILY_EVAL_ET_HOUR,
+    DAILY_EVAL_ET_START_MIN,
+    DAILY_EVAL_ET_END_MIN,
     DAILY_EVAL_HOUR_KST,
     DAILY_EVAL_START_MIN,
     DAILY_EVAL_END_MIN,
@@ -29,8 +39,19 @@ from config import (
     UNIT_DIVISOR,
     MIN_ORDER_USD,
     ALERT_COOLDOWN_SEC,
+    STAGE1_PARTIAL_EXIT_PCT,
+    HYBRID_TRAILING_MIN_PNL_PCT,
+    DRAWDOWN_THRESHOLD,
+    REBOUND_THRESHOLD,
+    LONG_EXIT_RISING_SMA,
+    LONG_EXIT_FALLING_SMA_MILD,
+    LONG_EXIT_FALLING_SMA_DEEP,
+    SHORT_EXIT_RISING_SMA,
+    SHORT_EXIT_FALLING_SMA_MILD,
+    SHORT_EXIT_FALLING_SMA_DEEP,
     validate_live_config,
 )
+from api import ls_client
 from api.exceptions import TradingError, DataUnavailableError, StateCorruptedError
 from utils.logger import logger
 from utils.notifier import notifier
@@ -45,6 +66,12 @@ from manager.reconciler import reconciler, ReconcileResult
 from manager.trader import trader, SIDE_CFG
 
 KST = timezone(timedelta(hours=9))
+ET = ZoneInfo("America/New_York")
+USE_LS = DAILY_SIGNAL_SOURCE == "ls"
+EVAL_WINDOW_LABEL = (
+    f"{DAILY_EVAL_ET_HOUR}:{DAILY_EVAL_ET_START_MIN:02d}~{DAILY_EVAL_ET_HOUR}:{DAILY_EVAL_ET_END_MIN:02d} ET" if USE_LS
+    else f"{DAILY_EVAL_HOUR_KST:02d}:{DAILY_EVAL_START_MIN:02d}~{DAILY_EVAL_HOUR_KST:02d}:{DAILY_EVAL_END_MIN:02d} KST"
+)
 MIN_DAILY_CANDLES = 61   # 일봉 지표 산출 최소 캔들 수
 MIN_4H_CANDLES = 6       # 4시간봉 지표 산출 최소 캔들 수 (완성봉 SMA5 = 완성봉 5개 + 진행 중 1개)
 
@@ -88,13 +115,119 @@ def load_ohlcv_or_abort(timeframe: str, limit: int, min_len: int) -> pd.DataFram
     return df
 
 
+def load_us_daily_or_abort() -> pd.DataFrame:
+    """
+    미국 현물 일봉 OHLCV를 수집합니다.
+    - 실전: 수집 실패/캔들 부족 시 DataUnavailableError (Bitget 자동 대체·모의 데이터 대체 금지)
+    - 모의: 수집 실패/캔들 부족 시 마지막 봉이 오늘(ET)인 모의 데이터로 대체
+    """
+    try:
+        df = ls_client.fetch_daily_ohlcv(LS_OHLCV_LIMIT)
+        if len(df) >= MIN_DAILY_CANDLES:
+            return df
+        reason = f"{US_SYMBOL} 현물 일봉 캔들 부족 ({len(df)} < {MIN_DAILY_CANDLES})"
+    except DataUnavailableError as e:
+        reason = str(e)
+
+    if not PAPER_TRADING:
+        raise DataUnavailableError(f"[LIVE] {reason}")
+    logger.warning(f"[PAPER] {reason} → 모의 데이터로 진행합니다.")
+    df = generate_mock_ohlcv(LS_OHLCV_LIMIT, timeframe=TIMEFRAME)
+    today = datetime.now(ET).date()
+    df['datetime'] = [(today - timedelta(days=i)).strftime('%Y-%m-%d') for i in reversed(range(len(df)))]
+    return df
+
+
 def is_daily_evaluation_window() -> bool:
-    """현재 한국 시각(KST)이 일봉 마감 평가 시간대(09:10 ~ 09:15)인지 검사합니다."""
+    """일봉 평가 시간대 여부 (ls: 평일 15:54~15:59 ET / bitget 롤백: 09:10~09:30 KST)"""
+    if USE_LS:
+        et_now = datetime.now(ET)
+        return (
+            et_now.weekday() < 5 and
+            et_now.hour == DAILY_EVAL_ET_HOUR and
+            DAILY_EVAL_ET_START_MIN <= et_now.minute <= DAILY_EVAL_ET_END_MIN
+        )
     kst_now = datetime.now(KST)
     return (
         kst_now.hour == DAILY_EVAL_HOUR_KST and
         DAILY_EVAL_START_MIN <= kst_now.minute <= DAILY_EVAL_END_MIN
     )
+
+
+def _num(value: Any, digits: int = 4) -> Optional[float]:
+    """JSON 직렬화용 숫자 정리 (NaN/None → None)"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(v) else round(v, digits)
+
+
+def build_daily_indicators_snapshot(indicators: Dict[str, Any]) -> Dict[str, Any]:
+    """대시보드용 일봉 평가 스냅샷 (숫자 필드만, 청산 배수는 전략 1차 청산 로직과 동일한 분기)"""
+    rising = bool(indicators.get('is_sma60_rising'))
+    dd = float(indicators.get('drawdown_rate', 0.0) or 0.0)
+    rb = float(indicators.get('rebound_rate', 0.0) or 0.0)
+    sma5 = float(indicators.get('sma5', 0.0) or 0.0)
+    partial = f"{STAGE1_PARTIAL_EXIT_PCT:g}% 선익절 + 2단계 승격"
+
+    def pct(mult: float) -> str:
+        return f"{(mult - 1.0) * 100:+.1f}%"
+
+    if rising:
+        long_mult = LONG_EXIT_RISING_SMA
+        long_rule = f"일봉 5MA {pct(long_mult)} 이상 장마감 시 {partial} (60일선 상승)"
+    elif dd > DRAWDOWN_THRESHOLD:
+        long_mult = LONG_EXIT_FALLING_SMA_MILD
+        long_rule = (
+            f"일봉 5MA {pct(long_mult)} 이상 회복 시 본전탈출 "
+            f"(수익률 +{HYBRID_TRAILING_MIN_PNL_PCT:g}% 이상이면 2단계 승격, 60일선 하락·완만한 낙폭)"
+        )
+    else:
+        long_mult = LONG_EXIT_FALLING_SMA_DEEP
+        long_rule = f"일봉 5MA {pct(long_mult)} 이상 장마감 시 {partial} (60일선 하락·과낙폭)"
+
+    if rising:
+        short_mult = SHORT_EXIT_RISING_SMA
+        short_rule = f"일봉 5MA {pct(short_mult)} 이하 장마감 시 {partial} (60일선 상승)"
+    elif rb < REBOUND_THRESHOLD:
+        short_mult = SHORT_EXIT_FALLING_SMA_MILD
+        short_rule = (
+            f"일봉 5MA {pct(short_mult)} 이하 하락 시 본전탈출 "
+            f"(수익률 +{HYBRID_TRAILING_MIN_PNL_PCT:g}% 이상이면 2단계 승격, 60일선 하락·완만한 반등)"
+        )
+    else:
+        short_mult = SHORT_EXIT_FALLING_SMA_DEEP
+        short_rule = f"일봉 5MA {pct(short_mult)} 이하 장마감 시 {partial} (60일선 하락·과반등)"
+
+    sma60 = _num(indicators.get('sma60'))
+    return {
+        "source": indicators.get('signal_source', 'bitget'),
+        "candle_date": indicators.get('candle_date', ''),
+        "evaluated_at_kst": datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'),
+        "eval_open": _num(indicators.get('eval_open')),
+        "eval_close": _num(indicators.get('eval_close')),
+        "prev_close": _num(indicators.get('prev_eval_close')),
+        "signal_price": _num(indicators.get('signal_price')),
+        "exec_price": _num(indicators.get('exec_price')),
+        "candle_change_pct": _num(float(indicators.get('candle_change', 0.0)) * 100.0, 2),
+        "daily_change_pct": _num(float(indicators.get('daily_change', 0.0)) * 100.0, 2),
+        "sma5": _num(sma5),
+        "sma60": sma60,
+        "prev_sma60": _num(indicators.get('sma60_prev')),
+        "has_sma60": sma60 is not None and sma60 > 0,
+        "is_sma60_rising": rising,
+        "high40": _num(indicators.get('high40')),
+        "low40": _num(indicators.get('low40')),
+        "dd_from_high_pct": _num(dd * 100.0, 2),
+        "rebound_from_low_pct": _num(rb * 100.0, 2),
+        "long_target_mult": long_mult,
+        "short_target_mult": short_mult,
+        "long_target_price": _num(sma5 * long_mult),
+        "short_target_price": _num(sma5 * short_mult),
+        "long_exit_rule": long_rule,
+        "short_exit_rule": short_rule,
+    }
 
 
 def sync_4h_trend_state(context_label: str = "Pipeline"):
@@ -145,26 +278,35 @@ def run_reconciliation(stage: str, throttle: bool) -> Dict[str, ReconcileResult]
 
 def run_pipeline(force: bool = False) -> bool:
     """
-    일봉 마감 시점 통합 실행 파이프라인 (09:10~09:30 KST, 동일 완성봉은 1일 1회만 평가)
-    force=True: 이미 평가한 완성봉이어도 재평가 (--run-once --force 전용)
-    0. state.json 무결성 확인
+    일봉 마감 시점 통합 실행 파이프라인 (ls: 15:54~15:59 ET / bitget: 09:10~09:30 KST, 동일 판정 봉은 1일 1회만 평가)
+    force=True: 이미 평가한 봉이어도 재평가 (--run-once --force 전용)
+    0. 주말/휴장 가드 및 state.json 무결성 확인
     1. 거래소 환경 점검/검증
-    2. 일봉 OHLCV 수집 (실전 실패 시 중단)
+    2. 일봉 OHLCV 수집 (ls: 미국 SOXL 현물 / bitget: Bitget 1D, 실전 실패 시 중단 - 소스 간 자동 대체 없음)
     3. 거래소 실제 포지션 대조 (불일치 전략 매매 차단)
     4. 지표 산출 → 5. 1차 청산/진입 평가 → 6. 텔레그램 일일 보고서 발송
     """
     start_time = datetime.now()
     logger.info("=" * 70)
-    logger.info(f"[Pipeline] 일봉 마감 실행 파이프라인 시작 ({start_time.strftime('%Y-%m-%d %H:%M:%S')})")
+    logger.info(f"[Pipeline] 일봉 마감 실행 파이프라인 시작 ({start_time.strftime('%Y-%m-%d %H:%M:%S')}, 신호 소스: {DAILY_SIGNAL_SOURCE})")
     logger.info("=" * 70)
 
     try:
-        # 0. 주말 미국 본장 휴장 동결 가드 (일요일/월요일 아침 캔들)
-        kst_now = datetime.now(KST)
-        if not force and WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
-            day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
-            logger.info(f"[Pipeline] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가가 동결(Freeze)되었습니다. (강제 실행: --run-once --force)")
-            return True
+        # 0. 주말/휴장 가드 (ls: 미국 ET 평일 + 정규장 개장 여부 / bitget: KST 일·월요일 아침 캔들 동결)
+        if not force:
+            if USE_LS:
+                if datetime.now(ET).weekday() >= 5:
+                    logger.info("[Pipeline] 미국 주말(ET)로 일봉 평가를 건너뜁니다. (강제 실행: --run-once --force)")
+                    return True
+                if not ls_client.is_us_market_open():
+                    logger.info("[Pipeline] 미국 정규장 휴장 또는 장외 시간(ET)으로 일봉 평가를 건너뜁니다. (강제 실행: --run-once --force)")
+                    return True
+            else:
+                kst_now = datetime.now(KST)
+                if WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
+                    day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
+                    logger.info(f"[Pipeline] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가가 동결(Freeze)되었습니다. (강제 실행: --run-once --force)")
+                    return True
 
         # 0-1. state.json 무결성 확인 (실전 모드 손상 시 중단)
         if cycle_manager.load_error:
@@ -174,7 +316,26 @@ def run_pipeline(force: bool = False) -> bool:
         bitget_client.setup_exchange()
 
         # 2. 일봉 OHLCV 수집
-        df = load_ohlcv_or_abort(TIMEFRAME, CANDLE_LIMIT, MIN_DAILY_CANDLES)
+        live_price: Optional[float] = None
+        if USE_LS:
+            df = load_us_daily_or_abort()
+            last_bar = str(df['datetime'].iloc[-1])
+            et_today = datetime.now(ET).strftime('%Y-%m-%d')
+            if last_bar == et_today:
+                live_price = ls_client.fetch_current_price()
+            elif not force:
+                msg = (
+                    f"미국 {US_SYMBOL} 현물 일봉의 마지막 봉({last_bar})이 오늘({et_today} ET)이 아닙니다. "
+                    f"휴장 또는 데이터 지연으로 일봉 평가를 건너뜁니다."
+                )
+                logger.warning(f"[Pipeline] {msg}")
+                if should_send_alert("ls_daily_bar_stale", ALERT_COOLDOWN_SEC):
+                    notifier.send_message(f"<b>⚠️ [Bitget V3 Switch 일봉 평가 생략]</b>\n• {escape_tg(msg)}")
+                return True
+            else:
+                logger.warning(f"[Pipeline] --force: 마지막 봉({last_bar})을 현재가 치환 없이 그대로 판정합니다.")
+        else:
+            df = load_ohlcv_or_abort(TIMEFRAME, CANDLE_LIMIT, MIN_DAILY_CANDLES)
 
         # 3. 거래소 실제 포지션 대조
         recon_results = run_reconciliation(stage="일봉 파이프라인", throttle=False)
@@ -186,18 +347,34 @@ def run_pipeline(force: bool = False) -> bool:
         indicators = IndicatorCalculator.calculate(
             df=df,
             cycle_peak=state_a.get("cycle_peak", 0.0),
-            cycle_trough=state_b.get("cycle_trough", 0.0)
+            cycle_trough=state_b.get("cycle_trough", 0.0),
+            mode="us_intraday_close" if USE_LS else "bitget_closed",
+            live_price=live_price
         )
 
-        # 4-1. 1일 1회 가드: 동일 완성봉으로 이미 평가했다면 매매 없이 종료 (더미/매수 이중 집행 방지)
+        # 4-1. 1일 1회 가드: 동일 판정 봉으로 이미 평가했다면 매매 없이 종료 (더미/매수 이중 집행 방지)
         eval_candle = indicators.get('candle_date', '')
         if not force and cycle_manager.is_daily_evaluated(eval_candle):
             logger.info(f"[Pipeline] 이미 평가 완료된 일봉({eval_candle}) - 중복 실행을 건너뜁니다. (재평가: --run-once --force)")
             return True
 
+        # 4-2. 주문 기준가: Bitget 선물 현재가 (신호는 미국 현물, 주문 수량·기준가는 Bitget)
+        if USE_LS:
+            indicators['exec_price'] = bitget_client.fetch_last_price(fallback=indicators['signal_price'])
+            logger.info(
+                f"[Pipeline] 신호가(미국 {US_SYMBOL} 현물) ${indicators['signal_price']:,.2f} / "
+                f"주문 기준가(Bitget) ${indicators['exec_price']:,.2f}"
+            )
+
         # 5. Trader 주문 집행 및 1차 청산 / 매수 평가
         logs = trader.process_daily_cycle(indicators, blocked=blocked)
         cycle_manager.mark_daily_evaluated(eval_candle)
+
+        # 5-0. 대시보드 STATE_SYNC용 일봉 평가 지표 스냅샷
+        try:
+            cycle_manager.update_daily_indicators(build_daily_indicators_snapshot(indicators))
+        except Exception as e_snap:
+            logger.warning(f"[Pipeline] 일봉 지표 스냅샷 갱신 실패: {e_snap}")
 
         # 5-1. 대시보드 STATE_SYNC용 4시간봉 5MA 상승 추세 상태 갱신 (보유 0개여도 동기화)
         sync_4h_trend_state(context_label="Pipeline")
@@ -214,9 +391,19 @@ def run_pipeline(force: bool = False) -> bool:
         unit_base_usd = trader.last_unit_base_usd
         hedge_unit_usd = free_margin / UNIT_DIVISOR
 
-        current_price = indicators['current_price']
-        eval_close = indicators.get('eval_close', current_price)
+        # 평가손익은 Bitget 평단 대비이므로 Bitget 주문 기준가(exec_price)로 계산
+        signal_price = indicators.get('signal_price', indicators['current_price'])
+        current_price = indicators.get('exec_price') or signal_price
+        eval_close = indicators.get('eval_close', signal_price)
         candle_change = indicators.get('candle_change', 0.0) * 100.0
+        if USE_LS:
+            cd = str(indicators.get('candle_date', ''))
+            md = f"{cd[5:7]}/{cd[8:10]}" if len(cd) >= 10 else cd
+            candle_basis = f" (미국 {US_SYMBOL} 현물 · {md} ET 장마감 직전)"
+            price_line = f"{US_SYMBOL} 현물 ${signal_price:,.2f} / Bitget ${current_price:,.2f}"
+        else:
+            candle_basis = ""
+            price_line = f"${current_price:,.2f}"
         change_icon = "🔻" if candle_change < 0 else "🔺"
         trend_text = "상승" if indicators.get('is_sma60_rising') else "하락"
 
@@ -322,8 +509,8 @@ def run_pipeline(force: bool = False) -> bool:
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 보고]</b>\n\n"
             f"<b>🔥 [핵심 지표]</b>\n"
-            f"• <b>일봉 변동률:</b> {change_icon} <b>{candle_change:+.2f}%</b> (종가 ${eval_close:,.2f})\n"
-            f"• <b>실시간 현재가:</b> ${current_price:,.2f}\n"
+            f"• <b>일봉 변동률:</b> {change_icon} <b>{candle_change:+.2f}%</b> (종가 ${eval_close:,.2f}){candle_basis}\n"
+            f"• <b>실시간 현재가:</b> {price_line}\n"
             f"• <b>이평선:</b> SMA5 ${indicators['sma5']:,.2f} / SMA60 ${indicators['sma60']:,.2f} ({trend_text})\n"
             f"• <b>계좌:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
             f"• <b>평가손익:</b> {pos_summary_a} / {pos_summary_b}\n"
@@ -416,22 +603,27 @@ def run_stage2_pipeline() -> bool:
 def run_cron_tick() -> bool:
     """
     Crontab 5분 주기 통합 틱 핸들러 (권장: 3-59/5 * * * *)
-    - 09:10 ~ 09:15 KST: 하루 1회 일봉 마감 평가 및 매수 진입 실행
+    - 15:54 ~ 15:59 ET (미국장 마감 직전, 서머타임 자동): 하루 1회 일봉 평가 및 매수 진입 실행
+      (DAILY_SIGNAL_SOURCE=bitget 롤백 시 09:10 ~ 09:30 KST)
     - 그 외 시간대:
-      - 2단계 트레일링 활성 중일 때: 4시간봉 2단계 매도 감시
+      - 2단계 트레일링 활성 중일 때: 1시간봉 2단계 매도 감시
       - 2단계 트레일링 비활성 시: 즉시 종료
     """
     kst_now = datetime.now(KST)
     logger.info(f"[CronTick] 5분 주기 감시 틱 실행 (KST {kst_now.strftime('%Y-%m-%d %H:%M:%S')})")
 
     if is_daily_evaluation_window():
-        if WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
-            day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
-            logger.info(f"[CronTick] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가를 동결(Freeze)합니다.")
-            return True
-        expected_eval_candle = (kst_now - timedelta(days=1)).strftime("%Y-%m-%d 09:00:00")
+        if USE_LS:
+            # 미국 주말은 평가 시간대 판정에서 제외됨, 휴장일은 run_pipeline 0단계에서 판정
+            expected_eval_candle = datetime.now(ET).strftime("%Y-%m-%d")
+        else:
+            if WEEKEND_FREEZE_ENABLED and kst_now.weekday() in WEEKEND_FREEZE_DAYS:
+                day_name = "일요일" if kst_now.weekday() == 6 else "월요일"
+                logger.info(f"[CronTick] 주말 미국 본장 휴장({day_name} 09:10 KST)으로 일봉 마감 평가를 동결(Freeze)합니다.")
+                return True
+            expected_eval_candle = (kst_now - timedelta(days=1)).strftime("%Y-%m-%d 09:00:00")
         if not cycle_manager.is_daily_evaluated(expected_eval_candle):
-            logger.info("[CronTick] 일봉 마감 평가 시간대(09:10~09:30 KST) 충족 -> 일봉 마감 파이프라인 실행")
+            logger.info(f"[CronTick] 일봉 평가 시간대({EVAL_WINDOW_LABEL}) 충족 -> 일봉 마감 파이프라인 실행")
             return run_pipeline()
         logger.info(f"[CronTick] 금일 일봉({expected_eval_candle}) 평가 완료 상태 -> 중복 파이프라인 진입 생략")
 

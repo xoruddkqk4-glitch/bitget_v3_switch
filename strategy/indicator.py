@@ -35,32 +35,51 @@ class IndicatorCalculator:
     """
 
     @staticmethod
-    def calculate(df: pd.DataFrame, cycle_peak: float = 0.0, cycle_trough: float = 0.0) -> Dict[str, Any]:
+    def calculate(
+        df: pd.DataFrame,
+        cycle_peak: float = 0.0,
+        cycle_trough: float = 0.0,
+        mode: str = "bitget_closed",
+        live_price: Optional[float] = None
+    ) -> Dict[str, Any]:
         """
         OHLCV DataFrame을 분석하여 지표 딕셔너리를 반환합니다.
+        - mode="bitget_closed": Bitget 1D 캔들, 09:00 KST 마감된 전일 완성봉(iloc[-2]) 판정 (롤백용)
+        - mode="us_intraday_close": 미국 현물 일봉, 장마감 직전 당일 봉(iloc[-1]) 판정.
+          live_price가 있으면 마지막 종가를 치환한 뒤 SMA를 계산합니다.
         """
         if df.empty or len(df) < 61:
             raise ValueError(f"지표 산출을 위해서는 최소 61개 이상의 일봉 데이터가 필요합니다. (현재: {len(df)}개)")
 
+        is_us = mode == "us_intraday_close"
+        close_series = df['close'].astype(float).copy()
+        high_series = df['high'].astype(float).copy()
+        low_series = df['low'].astype(float).copy()
+        if is_us and live_price is not None and live_price > 0:
+            close_series.iloc[-1] = float(live_price)
+            high_series.iloc[-1] = max(float(high_series.iloc[-1]), float(live_price))
+            low_series.iloc[-1] = min(float(low_series.iloc[-1]), float(live_price))
+
         # 이동평균선 산출
-        close_series = df['close'].astype(float)
         sma5_series = close_series.rolling(window=5).mean()
         sma60_series = close_series.rolling(window=60).mean()
 
-        # 실시간 가격 (오늘 미완성 캔들 iloc[-1]: 주문 집행 및 실시간 평가손익용)
+        # 미국 현물: 판정 봉 = 장마감 직전 당일 봉 (iloc[-1]), 비교 기준 = 전일 완성봉 (iloc[-2])
+        # Bitget: 판정 봉 = 방금 09:00 KST 마감된 전일 완성봉 (iloc[-2]), 비교 기준 = 전전일 완성봉 (iloc[-3])
+        eval_idx = -1 if is_us else -2
+
+        # 실시간 가격 (마지막 봉 iloc[-1]: 신호 판정 및 실시간 평가용)
         current_close = float(close_series.iloc[-1])
         current_open = float(df['open'].iloc[-1])
 
-        # 신호 판정 기준 일봉: 방금 09:00 마감 완료된 전일 완성봉 (iloc[-2])
-        # 비교 기준 전일봉: 전전일 완성봉 (iloc[-3])
-        eval_close = float(close_series.iloc[-2])
-        eval_open = float(df['open'].iloc[-2])
-        prev_eval_close = float(close_series.iloc[-3])
+        eval_close = float(close_series.iloc[eval_idx])
+        eval_open = float(df['open'].iloc[eval_idx])
+        prev_eval_close = float(close_series.iloc[eval_idx - 1])
 
-        # 완성봉 기준 이동평균선 (전일 마감 기준 SMA)
-        sma5_eval = float(sma5_series.iloc[-2])
-        sma60_eval = float(sma60_series.iloc[-2])
-        sma60_prev_eval = float(sma60_series.iloc[-3])
+        # 판정 봉 기준 이동평균선
+        sma5_eval = float(sma5_series.iloc[eval_idx])
+        sma60_eval = float(sma60_series.iloc[eval_idx])
+        sma60_prev_eval = float(sma60_series.iloc[eval_idx - 1])
 
         # 60일선 상승 여부 (전일 마감 기준)
         is_sma60_rising = sma60_eval > sma60_prev_eval
@@ -80,15 +99,22 @@ class IndicatorCalculator:
         effective_trough = min(cycle_trough, current_close, eval_close) if cycle_trough > 0 else min(current_close, eval_close)
         rebound_rate = (current_close - effective_trough) / effective_trough if effective_trough > 0 else 0.0
 
-        # 평가 대상 완성봉 일시 (전일 일봉)
-        eval_candle_date = str(df['datetime'].iloc[-2]) if 'datetime' in df.columns else ""
+        # 평가 대상 봉 일시 (Bitget: "YYYY-MM-DD 09:00:00" KST / 미국 현물: "YYYY-MM-DD" ET 거래일)
+        eval_candle_date = str(df['datetime'].iloc[eval_idx]) if 'datetime' in df.columns else ""
 
         indicators = {
             'current_price': current_close,
+            'signal_price': current_close,
+            'exec_price': current_close,
+            'signal_source': "LS" if is_us else "bitget",
+            'eval_mode': mode,
+            'high40': float(high_series.iloc[-40:].max()),
+            'low40': float(low_series.iloc[-40:].min()),
             'current_open': current_open,
             'prev_close': eval_close,
             'eval_close': eval_close,
             'eval_open': eval_open,
+            'prev_eval_close': prev_eval_close,
             'sma5': sma5_eval,
             'sma60': sma60_eval,
             'sma60_prev': sma60_prev_eval,
@@ -103,8 +129,9 @@ class IndicatorCalculator:
             'latest_datetime': str(df['datetime'].iloc[-1]) if 'datetime' in df.columns else ""
         }
 
+        candle_label = "기준봉(당일 장마감 직전)" if is_us else "기준완성봉"
         logger.info(
-            f"[Indicators] 기준완성봉({eval_candle_date}): 종가 ${eval_close:,.2f}, 캔들등락: {candle_change*100:+.2f}%, 전일비: {daily_change*100:+.2f}% | "
+            f"[Indicators] {candle_label}({eval_candle_date}): 종가 ${eval_close:,.2f}, 캔들등락: {candle_change*100:+.2f}%, 전일비: {daily_change*100:+.2f}% | "
             f"실시간가: ${current_close:,.2f} | SMA5: ${sma5_eval:,.2f}, SMA60: ${sma60_eval:,.2f} "
             f"({'상승중' if is_sma60_rising else '하락중'}), 낙폭률: {drawdown_rate*100:+.2f}%, 반등폭: {rebound_rate*100:+.2f}%"
         )

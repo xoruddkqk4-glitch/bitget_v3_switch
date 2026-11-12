@@ -99,6 +99,13 @@ class Trader:
         """텔레그램 HTML 파싱 오류 방지를 위한 특수문자 이스케이프"""
         return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    @staticmethod
+    def _signal_exec_prices(indicators: Dict[str, Any]) -> Tuple[float, float]:
+        """(신호 판정가=미국 현물 또는 Bitget 일봉, 주문 기준가=Bitget 선물)"""
+        signal_px = float(indicators.get('signal_price') or indicators['current_price'])
+        exec_px = float(indicators.get('exec_price') or signal_px)
+        return signal_px, exec_px
+
     def _refresh_balance(self) -> Tuple[float, float]:
         """총 평가 잔고/가용 잔고를 조회해 캐시합니다. (실전 실패 시 예외 전파)"""
         total_balance, free_margin = self.client.fetch_account_balance()
@@ -161,7 +168,7 @@ class Trader:
         """
         blocked = set(blocked or set())
         date_str = indicators.get('candle_date', '')
-        current_price = indicators['current_price']
+        signal_price, _ = self._signal_exec_prices(indicators)
         execution_logs: List[str] = []
         self.last_eval = {
             name: {
@@ -187,7 +194,7 @@ class Trader:
         # 2. 전고점/전저점 갱신 (차단 전략 제외)
         for name in STRATEGY_NAMES:
             if name not in blocked:
-                self.cycles.update_price_extremes(name, current_price)
+                self.cycles.update_price_extremes(name, signal_price)
 
         cleared_today = {name: False for name in STRATEGY_NAMES}
         failed: Set[str] = set()
@@ -259,7 +266,7 @@ class Trader:
         cfg = SIDE_CFG[strategy_name]
         label = cfg["label"]
         strategy = self.strategies[strategy_name]
-        current_price = indicators['current_price']
+        current_price, exec_price = self._signal_exec_prices(indicators)
         state = self.cycles.get_strategy_state(strategy_name)
 
         exit_met, action, exit_reason, target_price = strategy.check_stage1_exit_signal(
@@ -353,7 +360,7 @@ class Trader:
             # 2) 남은 50% 물량은 2단계 4H 5MA 감시 모드로 전환하며, 최저보존선은 1차 목표 매도가(target_price)로 설정
             return self._execute_stage1_partial_and_enter_stage2(
                 strategy_name=strategy_name,
-                current_price=current_price,
+                current_price=exec_price,
                 target_price=target_price,
                 exit_reason=exit_reason,
                 date_str=date_str,
@@ -364,7 +371,7 @@ class Trader:
             logger.info(f"[Trader] [{strategy_name}] {label} 즉시 전량 청산 충족! 사유: {exit_reason}")
             closed, log_msg = self._close_position(
                 strategy_name=strategy_name,
-                ref_price=current_price,
+                ref_price=exec_price,
                 date_str=date_str,
                 reason=exit_reason,
                 unit_label="ALL_CLEAR",
@@ -376,7 +383,7 @@ class Trader:
                 eval_data = self.last_eval.get(strategy_name, {})
                 pnl_usd = eval_data.get("cleared_pnl_usd", 0.0)
                 pnl_pct = eval_data.get("cleared_pnl_pct", 0.0)
-                fill_str = f"${eval_data.get('cleared_price', current_price):,.2f}"
+                fill_str = f"${eval_data.get('cleared_price', exec_price):,.2f}"
                 self.last_eval[strategy_name]["exit_reason"] = (
                     f"목표가 도달 → 즉시 전량 청산 완료 (체결가 {fill_str}, 확정손익 {pnl_usd:+,.2f} USD, {pnl_pct:+.2f}%)"
                 )
@@ -957,7 +964,7 @@ class Trader:
 
         self._execute_real_entry(
             strategy_name=strategy_name,
-            current_price=indicators['current_price'],
+            current_price=self._signal_exec_prices(indicators)[1],
             date_str=date_str,
             weight=weight,
             unit_label=unit_label,

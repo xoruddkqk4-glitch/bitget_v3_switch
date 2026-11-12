@@ -40,7 +40,18 @@ LEVERAGE = 1                   # 1배율
 MARGIN_MODE = "cross"          # 교차 마진 (Cross Margin)
 POSITION_MODE = "hedge"        # 헤지 모드 (Long/Short 동시 독립 보유)
 
-# 2단계 트레일링 매도 및 스케줄링 설정
+# 일봉 신호 소스 (신호=미국 SOXL 현물 / 주문·2단계 감시=Bitget 선물)
+DAILY_SIGNAL_SOURCE = os.getenv("DAILY_SIGNAL_SOURCE", "ls").strip().lower()   # "ls"(미국 현물, 기본) | "bitget"(기존 방식 롤백용)
+US_SYMBOL = "SOXL"
+LS_OHLCV_LIMIT = 120                                            # SMA60 + 여유
+LS_CHANGE_MODE = "REAL"                                         # myLS_StockInfo.yaml REAL_APP_KEY 접두사와 일치
+
+# 일봉 평가 시각 (미국 동부시간, 서머타임 자동) - DAILY_SIGNAL_SOURCE == "ls"
+DAILY_EVAL_ET_HOUR = 15
+DAILY_EVAL_ET_START_MIN = 54
+DAILY_EVAL_ET_END_MIN = 59
+
+# 2단계 트레일링 매도 및 스케줄링 설정 (아래 KST 평가 시각/주말 동결은 DAILY_SIGNAL_SOURCE == "bitget" 롤백 경로 전용)
 DAILY_EVAL_HOUR_KST = 9        # 매일 일봉 마감 평가 시간(KST)
 DAILY_EVAL_START_MIN = 10      # 일봉 마감 평가 시작 분 (09:10 KST)
 DAILY_EVAL_END_MIN = 30        # 일봉 마감 평가 종료 분 (09:30 KST, 실패 시 재시도 허용 / 중복은 last_daily_eval_candle 가드가 차단)

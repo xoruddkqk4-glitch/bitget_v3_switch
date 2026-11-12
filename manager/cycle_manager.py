@@ -180,6 +180,8 @@ class CycleManager:
             snap[key] = {f: s.get(f) for f in _SYNC_FIELDS}
         if isinstance(state.get("trend_riding"), dict):
             snap["trend_riding"] = state.get("trend_riding")
+        if isinstance(state.get("daily_indicators"), dict):
+            snap["daily_indicators"] = state.get("daily_indicators")
         return snap
 
     def _push_state_sync(self, state: Dict[str, Any]):
@@ -570,6 +572,13 @@ class CycleManager:
         if self.state.get("trend_riding") != new_trend:
             self.state["trend_riding"] = new_trend
             self._save_state(self.state)
+
+    def update_daily_indicators(self, ind: Dict[str, Any]):
+        """일봉 평가 지표 스냅샷(숫자 필드만)을 state.json 및 대시보드 STATE_SYNC에 반영합니다. (일봉 평가 시 1회)"""
+        if not isinstance(ind, dict):
+            return
+        self.state["daily_indicators"] = dict(ind)
+        self._save_state(self.state)
 
     # ------------------------------------------------------------------
     # 손상 대응 / 포지션 대조 지원 메서드
