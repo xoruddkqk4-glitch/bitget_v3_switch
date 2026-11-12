@@ -12,6 +12,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from config import US_SYMBOL, LS_CHANGE_MODE
 from api.exceptions import DataUnavailableError
@@ -19,6 +20,8 @@ from utils.logger import logger
 
 ET = ZoneInfo("America/New_York")
 OHLCV_RETRY_DELAYS = (0.0, 2.0, 4.0)
+YF_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart/{code}"
+YF_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 _LsCommon = None
 _LsiUS = None
@@ -58,6 +61,45 @@ def _validate_ohlcv(df: Optional[pd.DataFrame]) -> str:
     return ""
 
 
+def _fetch_today_bar_from_yahoo(today: str) -> Optional[dict]:
+    """
+    야후 chart 원본에서 오늘(ET) 봉을 읽습니다.
+    장중·장마감 직후 야후는 오늘 봉의 close를 비워 보내고(None), 공통모듈 야후 HTTP 경로는 close 결측 행을 버립니다.
+    이때 오늘 봉의 시가/고가/저가는 원본 값을, 종가는 meta.regularMarketPrice를 씁니다. (휴장일이면 오늘 행이 없어 None)
+    """
+    try:
+        r = requests.get(YF_CHART_URL.format(code=US_SYMBOL), headers=YF_HEADERS, timeout=10,
+                         params={"range": "5d", "interval": "1d"})
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+        q = res["indicators"]["quote"][0]
+        dates = pd.to_datetime(res["timestamp"], unit="s", utc=True).tz_convert(ET).strftime("%Y-%m-%d")
+        rows = [i for i, d in enumerate(dates) if d == today]
+        if not rows:
+            return None
+        i = rows[-1]
+        open_px = q["open"][i]
+        if open_px is None or float(open_px) <= 0:
+            return None
+        meta = res.get("meta") or {}
+        meta_dt = pd.to_datetime(meta.get("regularMarketTime") or 0, unit="s", utc=True).tz_convert(ET).strftime("%Y-%m-%d")
+        close_px = q["close"][i] or (meta.get("regularMarketPrice") if meta_dt == today else None)
+        if close_px is None or float(close_px) <= 0:
+            return None
+        open_px, close_px = float(open_px), float(close_px)
+        return {
+            "open": open_px,
+            "high": float(q["high"][i] or max(open_px, close_px)),
+            "low": float(q["low"][i] or min(open_px, close_px)),
+            "close": close_px,
+            "volume": float(q["volume"][i] or 0.0),
+            "datetime": today,
+        }
+    except Exception as e:
+        logger.warning(f"[LS] 야후 원본 오늘 봉 조회 실패: {e}")
+        return None
+
+
 def fetch_daily_ohlcv(limit: int) -> pd.DataFrame:
     """
     미국 현물 일봉 OHLCV를 반환합니다. (최대 3회 재시도, 실패 시 DataUnavailableError)
@@ -80,10 +122,22 @@ def fetch_daily_ohlcv(limit: int) -> pd.DataFrame:
             continue
 
         df = raw[["open", "high", "low", "close", "volume"]].astype(float).copy()
-        dates = pd.to_datetime(pd.Index(raw.index).astype(str))
-        df["datetime"] = dates.strftime("%Y-%m-%d")
-        df["timestamp"] = ((dates - pd.Timestamp("1970-01-01")) // pd.Timedelta(milliseconds=1)).astype("int64")
+        df["datetime"] = pd.to_datetime(pd.Index(raw.index).astype(str)).strftime("%Y-%m-%d")
         df = df.reset_index(drop=True)
+
+        et_now = datetime.now(ET)
+        today = et_now.strftime("%Y-%m-%d")
+        if df["datetime"].iloc[-1] < today and et_now.weekday() < 5:
+            today_bar = _fetch_today_bar_from_yahoo(today)
+            if today_bar:
+                df = pd.concat([df, pd.DataFrame([today_bar])], ignore_index=True)
+                logger.info(
+                    f"[LS] {US_SYMBOL} 오늘 봉({today}) 누락 → 야후 원본으로 보완 "
+                    f"(시가 ${today_bar['open']:,.2f}, 종가 ${today_bar['close']:,.2f})"
+                )
+
+        dates = pd.to_datetime(df["datetime"])
+        df["timestamp"] = ((dates - pd.Timestamp("1970-01-01")) // pd.Timedelta(milliseconds=1)).astype("int64")
         logger.info(f"[LS] {US_SYMBOL} 현물 일봉 {len(df)}개 수집 완료 (마지막 봉(ET): {df['datetime'].iloc[-1]})")
         return df
 
