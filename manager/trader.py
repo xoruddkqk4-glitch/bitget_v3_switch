@@ -106,6 +106,13 @@ class Trader:
         exec_px = float(indicators.get('exec_price') or signal_px)
         return signal_px, exec_px
 
+    @staticmethod
+    def _to_exec_scale(price: float, signal_px: float, exec_px: float) -> float:
+        """신호가(현물) 기준 가격을 평가 시점 베이시스(exec/signal)로 Bitget 선물 가격 단위로 환산"""
+        if price <= 0 or signal_px <= 0 or exec_px <= 0:
+            return price
+        return price * (exec_px / signal_px)
+
     def _refresh_balance(self) -> Tuple[float, float]:
         """총 평가 잔고/가용 잔고를 조회해 캐시합니다. (실전 실패 시 예외 전파)"""
         total_balance, free_margin = self.client.fetch_account_balance()
@@ -272,8 +279,11 @@ class Trader:
         exit_met, action, exit_reason, target_price = strategy.check_stage1_exit_signal(
             current_price=current_price,
             indicators=indicators,
-            cycle_info=state
+            cycle_info=state,
+            pnl_price=exec_price
         )
+        # 2단계 보존선은 Bitget 선물가로 감시하므로 현물 기준 목표가를 Bitget 가격 단위로 환산해 저장
+        base_price = self._to_exec_scale(target_price, current_price, exec_price)
 
         total_qty = float(state.get('total_qty', 0.0))
         executed_units = int(state.get('executed_units', 0))
@@ -296,7 +306,8 @@ class Trader:
         if state.get("trailing_mode", False):
             self._handle_trailing_ratchet(
                 strategy_name, exit_met, action, exit_reason, target_price, date_str, execution_logs,
-                current_price=current_price
+                current_price=current_price,
+                base_price=base_price
             )
             return False
 
@@ -357,11 +368,12 @@ class Trader:
         if action == "ENTER_STAGE2":
             # 1단계 목표가 달성:
             # 1) 보유 포지션의 50%(STAGE1_PARTIAL_EXIT_RATIO)를 매도 시점 현재가에 즉시 시장가 선(先)익절
-            # 2) 남은 50% 물량은 2단계 4H 5MA 감시 모드로 전환하며, 최저보존선은 1차 목표 매도가(target_price)로 설정
+            # 2) 남은 50% 물량은 2단계 4H 5MA 감시 모드로 전환하며, 최저보존선은 1차 목표가의 Bitget 환산가(base_price)로 설정
             return self._execute_stage1_partial_and_enter_stage2(
                 strategy_name=strategy_name,
                 current_price=exec_price,
                 target_price=target_price,
+                base_price=base_price,
                 exit_reason=exit_reason,
                 date_str=date_str,
                 execution_logs=execution_logs
@@ -398,7 +410,8 @@ class Trader:
         target_price: float,
         exit_reason: str,
         date_str: str,
-        execution_logs: List[str]
+        execution_logs: List[str],
+        base_price: float = 0.0
     ) -> bool:
         """
         1단계 익절 조건(ENTER_STAGE2) 통과 시:
@@ -414,7 +427,7 @@ class Trader:
         avg_price = float(state.get("avg_price", 0.0))
         state_qty = float(state.get("total_qty", 0.0))
         close_qty = self._resolve_close_qty(strategy_name, state_qty)
-        effective_base = float(target_price)
+        effective_base = float(base_price) if base_price > 0 else float(target_price)
 
         exit_pct = float(STAGE1_PARTIAL_EXIT_PCT)
         exit_ratio = exit_pct / 100.0
@@ -613,7 +626,8 @@ class Trader:
         target_price: float,
         date_str: str,
         execution_logs: List[str],
-        current_price: float = 0.0
+        current_price: float = 0.0,
+        base_price: float = 0.0
     ):
         """
         트레일링 감시 중 일봉 재평가 처리:
@@ -626,7 +640,7 @@ class Trader:
             logger.info(f"[Trader] [{strategy_name}] {label} 트레일링 감시 중 - 일봉 재평가 결과 무시 ({action}: {exit_reason})")
             return
 
-        candidate_base = float(target_price)
+        candidate_base = float(base_price) if base_price > 0 else float(target_price)
 
         improved, old_base, new_base = self.cycles.ratchet_trailing_base(
             strategy_name, candidate_base, exit_reason, date_str

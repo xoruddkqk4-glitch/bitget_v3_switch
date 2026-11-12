@@ -58,10 +58,13 @@ class StrategyBShort(BaseStrategy):
         self,
         current_price: float,
         indicators: Dict[str, Any],
-        cycle_info: Dict[str, Any]
+        cycle_info: Dict[str, Any],
+        pnl_price: float = 0.0
     ) -> Tuple[bool, str, str, float]:
         """
-        숏 1차 청산 신호 평가 (일봉 마감 시점 09:10~09:15):
+        숏 1차 청산 신호 평가 (일봉 마감 시점):
+        - current_price: 목표가 도달 판정가 (미국 현물 또는 Bitget 일봉)
+        - pnl_price: 평단 대비 수익률·본전 가드 비교가 (Bitget 선물, 0이면 current_price 사용)
         Returns:
             Tuple[is_met, action_type, reason, target_price]
             - action_type: 'ENTER_STAGE2' (상승눌림/과반등 익절), 'IMMEDIATE_EXIT' (완만한 반등 본탈), 'NONE'
@@ -110,7 +113,8 @@ class StrategyBShort(BaseStrategy):
                     return False, "NONE", f"60일선 하락장 & 완만한 반등({rebound_rate*100:+.1f}% < +30%): 현재가 > SMA5*1.01 목표가(${target_price:,.2f})", target_price
 
                 avg_price = float(cycle_info.get('avg_price', 0.0) or 0.0)
-                current_pnl_pct = ((avg_price - current_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
+                pnl_px = float(pnl_price) if pnl_price and pnl_price > 0 else current_price
+                current_pnl_pct = ((avg_price - pnl_px) / avg_price) * 100.0 if avg_price > 0 else 0.0
 
                 # 스마트 하이브리드 익절: 수익률이 기준치 이상이면 2단계 트레일링으로 추세 추종
                 if current_pnl_pct >= HYBRID_TRAILING_MIN_PNL_PCT:
@@ -124,10 +128,10 @@ class StrategyBShort(BaseStrategy):
                 # 본전 가드 (선택 옵션, 롱과 대칭): 현재가 <= 평단 × (1 - BREAKEVEN_GUARD_MIN_PCT) 일 때만 청산
                 if BREAKEVEN_GUARD_ENABLED:
                     guard_price = avg_price * (1.0 - BREAKEVEN_GUARD_MIN_PCT)
-                    if avg_price > 0 and current_price > guard_price:
+                    if avg_price > 0 and pnl_px > guard_price:
                         return False, "NONE", (
                             f"60일선 하락장 & 완만한 반등({rebound_rate*100:+.1f}% < +30%): SMA5*1.01 목표가(${target_price:,.2f}) 도달 | "
-                            f"본전 가드 미달(현재가 ${current_price:,.2f} > 평단×{1.0 - BREAKEVEN_GUARD_MIN_PCT:.3f} ${guard_price:,.2f}) → 보유 유지"
+                            f"본전 가드 미달(Bitget가 ${pnl_px:,.2f} > 평단×{1.0 - BREAKEVEN_GUARD_MIN_PCT:.3f} ${guard_price:,.2f}) → 보유 유지"
                         ), target_price
 
                 # 수익률 기준치 미만인 경우: 기존대로 안전 즉시 본탈
