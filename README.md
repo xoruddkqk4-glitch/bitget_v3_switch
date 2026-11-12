@@ -854,3 +854,21 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 구문 컴파일 검증 완료: `python -m py_compile config.py strategy/indicator.py strategy/strategy_a_long.py strategy/strategy_b_short.py manager/cycle_manager.py manager/trader.py utils/excel_logger.py main.py` 오류 0건 통과
   - 단위 시나리오 검증(1단계 50% 선익절 및 최저보존선 설정, 1H 완성봉 산출, 수평 횡보 -0.1% 노이즈 홀딩 및 -0.33% 실제 추세 이탈 청산) 전 건 통과
   - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/`) SCP 파일 동기화 및 원격 가상환경 문법 검증 완료
+
+
+## [2026-11-12 10:10] 업데이트 이력 (Commit ID: 3812034)
+- **수정 내용**:
+  - **일봉 신호 소스 Bitget 1D 선물 → 미국 SOXL 현물 일봉(LS 공통모듈, `yf_auto`) 전환 (`docs/20261112_0950_ls_api_switch_implementation_plan.md` /apply)**:
+    - `config.py`: `DAILY_SIGNAL_SOURCE`(`ls` 기본 / `bitget` 롤백), `US_SYMBOL`, `LS_OHLCV_LIMIT`, `LS_CHANGE_MODE`, `DAILY_EVAL_ET_HOUR/START_MIN/END_MIN`(15:54~15:59 ET) 추가
+    - `api/ls_client.py`(신규): 미국 현물 일봉(3회 재시도·유효성 검사, `datetime`(ET 거래일)/`timestamp`(ms) 생성), LS 현재가, 미국장 개장 판정 어댑터. LS 모듈은 최초 사용 시 지연 로드(5분 틱마다 토큰 점검 방지)
+    - `strategy/indicator.py`: `mode="us_intraday_close"`(장마감 직전 당일 봉 `iloc[-1]` 판정, 종가를 LS 현재가로 치환 후 SMA 계산) / `"bitget_closed"`(기존) 분기, `signal_price`·`exec_price`·`high40`/`low40`·`prev_eval_close` 반환
+    - `manager/trader.py`: 판정·싸이클 고저점 갱신 = `signal_price`(현물), 주문 수량·기준가·최소 주문금액·체결가 대체값 = `exec_price`(Bitget 선물)로 가격 역할 분리
+    - `api/bitget_client.py`: `fetch_last_price()` 신설 (실전 실패 시 `DataUnavailableError`, PAPER는 신호가 대체)
+    - `manager/cycle_manager.py`: `state.json` 최상위 `daily_indicators` 스냅샷(`update_daily_indicators`) 및 `STATE_SYNC` 포함
+    - `main.py`: ET 평가 시간대·미국 주말/휴장 가드, 당일 봉 날짜 가드(오늘 ET 아니면 평가 생략 + 텔레그램 경고 1회), ET 날짜 기준 중복 가드, 일봉 보고 기준 표기(`미국 SOXL 현물 · MM/DD ET 장마감 직전`)·현물/Bitget 현재가 병기, 평가손익 Bitget 가격 기준, 실전 LS 실패 시 Bitget 자동 대체 금지
+    - LS 공통모듈(`LS_Common_new.py`, `LS_API_Helper_US_new.py`, `LS_API_Helper_KR_new.py`) 저장소 추가, `.gitignore`에 `myLS_StockInfo.yaml`·`ls_*_token.json` 제외
+    - `requirements.txt`(`pyyaml`, `pytz`, `yfinance`), `.env.example`(`DAILY_SIGNAL_SOURCE`), README 크론(`3-59/5`)·데이터 흐름·LS 설정 링크 가이드 갱신
+- **검증 결과**:
+  - 로컬 구문 컴파일 검증 완료: `python -m py_compile main.py config.py api/ls_client.py api/bitget_client.py strategy/indicator.py manager/cycle_manager.py manager/trader.py` 오류 0건, 린트 0건
+  - 합성 데이터 검증: 판정 봉 날짜(ET), SMA5 현재가 치환값, `daily_indicators` 스냅샷 JSON, `timestamp` ms 변환(초 단위 버그 발견·수정) 확인
+  - EC2 사전 점검: LS 모듈 파일 존재, 원본 `/home/ec2-user/myLS_StockInfo.yaml` 존재 / **봇 루트 yaml 링크 없음, 크론 venv에 `pyyaml`·`yfinance` 미설치** → 실서버 배포 보류 (환경 준비 후 배포 예정)
