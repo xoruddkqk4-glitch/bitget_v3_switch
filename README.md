@@ -876,7 +876,7 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 
 ## [2026-11-12 10:15] 업데이트 이력 (Commit ID: 2ff5f0a)
 - **수정 내용**:
-  - **EC2 실서버 LS 신호 경로 배포 및 오늘 봉 누락 버그 수정 (pi/ls_client.py)**:
+  - **EC2 실서버 LS 신호 경로 배포 및 오늘 봉 누락 버그 수정 (`api/ls_client.py`)**:
     - 서버 준비: 크론 venv에 `pyyaml`·`yfinance==0.2.43` 설치(기존 pandas/numpy/requests/ccxt 버전 변경 없음, pytz 기존 설치), `myLS_StockInfo.yaml` 심볼릭 링크 생성 및 원본 `chmod 600`, 교체 대상 파일·`state.json` 백업(`backups/pre_ls_switch_20261112_010910.tgz`)
     - 배포 검증 중 발견: 서버 yfinance 0.2.43이 야후 응답 변경으로 실패 → 공통모듈 야후 직접HTTP 폴백에서 오늘 봉의 `close=None` 행이 제거되어 마지막 봉이 전일로 남음 (15:5x ET 평가가 당일 봉 날짜 가드로 매일 생략될 위험)
     - `fetch_daily_ohlcv`: 마지막 봉이 오늘(ET) 이전이고 평일이면 야후 chart 원본에서 오늘 봉 시가/고가/저가와 `meta.regularMarketPrice` 종가로 보완 (휴장일은 오늘 행이 없어 보완하지 않음 → 날짜 가드가 평가 생략)
