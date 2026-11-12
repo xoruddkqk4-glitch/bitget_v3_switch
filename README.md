@@ -886,3 +886,17 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 임시 복사본(텔레그램·구글시트 비활성)에서 `PAPER_TRADING=true --run-once --force` 정상 종료(exit 0): 신호가(현물) $61.47 / 주문 기준가(Bitget) $61.56 분리, `daily_indicators.source == "LS"` 기록 확인
   - 실서버 `state.json` 변경 없음(백업과 MD5 일치), 크론 모드라 프로세스 재기동 불필요
   - 참고: 정규장 외 시간에는 LS 현재가가 시간외 체결가로 응답됨(정규장 종가 $66.03 대비 $61.45) → 15:5x ET 정규장 평가에는 영향 없음
+
+
+## [2026-11-12 13:58] 업데이트 이력 (Commit ID: d1d9f4e)
+- **수정 내용**:
+  - **현물 신호 / Bitget 선물 감시 간 가격 단위(베이시스) 불일치 보정**:
+    - 문제: 1차 목표가(미국 SOXL 현물 `SMA5 × 배수`)를 그대로 2단계 최저 보존선으로 저장한 뒤 Bitget 선물 현재가와 비교 → 현물·선물 가격 차이가 보존선 버퍼(0.2%)보다 크면 2단계 돌입 직후 즉시 청산되거나 보호선이 느슨해질 위험
+    - `manager/trader.py`: `_to_exec_scale()` 신설, 평가 시점 비율(`exec_price / signal_price`)로 목표가를 Bitget 가격 단위로 환산해 `trailing_base_price`에 저장 (2단계 최초 돌입 `_execute_stage1_partial_and_enter_stage2`, 일봉 재평가 래칫 `_handle_trailing_ratchet` 공통). `trailing_target_price`·보고 문구의 1단계 목표가는 현물 기준 유지
+    - `strategy/strategy_a_long.py`, `strategy/strategy_b_short.py`: `check_stage1_exit_signal(..., pnl_price)` 인자 추가 → 목표가 도달 판정은 현물, 하이브리드 수익률(`HYBRID_TRAILING_MIN_PNL_PCT` 비교)과 본전 가드(`guard_price`)는 Bitget 가격 대비 평단으로 계산 (미지정 시 기존처럼 판정가 사용)
+    - `DAILY_SIGNAL_SOURCE=bitget` 롤백 시 두 가격이 같아 환산 비율 1 → 기존 동작과 동일
+- **검증 결과**:
+  - 로컬 `python -m py_compile manager/trader.py strategy/strategy_a_long.py strategy/strategy_b_short.py` 오류 0건
+  - 시나리오: 롱 평단 100·현물 99.5(목표 도달)·Bitget 110 → `ENTER_STAGE2`(수익률 +10%), Bitget 미지정 시 기존대로 `IMMEDIATE_EXIT`, 숏 대칭 동작 확인, 환산 102 × (99/100) = 100.98 확인
+  - EC2 배포: 기존 파일 백업(`backups/pre_basis_fix_20261112_045750.tgz`) 후 SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치
+  - 실서버 `state.json` 두 전략 모두 `trailing_mode=false` → 기존 보존선 마이그레이션 불필요, 크론(`3-59/5`) 모드라 프로세스 재기동 불필요
