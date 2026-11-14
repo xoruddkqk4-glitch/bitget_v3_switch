@@ -4,7 +4,13 @@ utils/formatters.py
 """
 
 from typing import Optional
-from config import PROGRESS_FILLED_ICON, PROGRESS_EMPTY_ICON, DUMMY_TARGET, MAX_EXECUTED_UNITS
+from config import (
+    PROGRESS_FILLED_ICON,
+    PROGRESS_EMPTY_ICON,
+    PROGRESS_PARTIAL_ICON,
+    DUMMY_TARGET,
+    MAX_EXECUTED_UNITS,
+)
 
 
 def format_progress_single_track(
@@ -15,33 +21,40 @@ def format_progress_single_track(
     filled_char: Optional[str] = None,
     empty_char: Optional[str] = None,
     include_counts: bool = True,
-    only_bar: bool = False
+    only_bar: bool = False,
+    partial_exit: bool = False,
+    partial_char: Optional[str] = None,
 ) -> str:
     """
-    더미 차수(기본 2차)와 실제 매수 차수(기본 10차)를 단일 트랙 구분 바로 시각화합니다.
-    
+    더미 차수(기본 2차)와 실제 매수 차수(기본 13차)를 단일 트랙 구분 바로 시각화합니다.
+
     예시:
     - [더미: 🟨⬛ ┆ 실제: ⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛] (더미 1/2 진입, 실제 0/13)
     - [🟨⬛ ┆ ⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛] (only_bar=True)
-    
+    - [🟨🟨 ┆ 🟪🟪⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛] (partial_exit=True, 1단계 50% 익절 후 2단계 감시)
+
     :param dummy_count: 진입한 더미 횟수 (0~max_dummy)
     :param executed_units: 실제 체결된 매수 유닛 수 (0~max_units)
     :param max_dummy: 최대 더미 차수 (기본 2)
-    :param max_units: 최대 실제 매수 차수 (기본 10)
+    :param max_units: 최대 실제 매수 차수 (기본 13)
     :param filled_char: 체결 완료/진입 표시 아이콘 (기본 노란색 사각 블록 '🟨')
     :param empty_char: 미체결/빈 슬롯 표시 아이콘 (기본 검정색 사각 블록 '⬛')
-    :param include_counts: 우측에 수치 카운트 '(더미 X/2 진입, 실제 Y/10)' 병기 여부
+    :param include_counts: 우측에 수치 카운트 '(더미 X/2 진입, 실제 Y/13)' 병기 여부
     :param only_bar: 텍스트 태그 없이 순수 게이지 바 '[🟨⬛ ┆ ⬛*13]'만 반환
+    :param partial_exit: True면 실전 체결 칸을 부분익절(2단계 감시) 아이콘으로 표시
+    :param partial_char: 부분익절 칸 아이콘 (기본 보라색 사각 블록 '🟪')
     :return: 시각화된 진행 상태 문자열
     """
     f_char = filled_char if filled_char is not None else PROGRESS_FILLED_ICON
     e_char = empty_char if empty_char is not None else PROGRESS_EMPTY_ICON
+    p_char = partial_char if partial_char is not None else PROGRESS_PARTIAL_ICON
+    u_char = p_char if partial_exit else f_char
 
     d_count = min(max(int(dummy_count or 0), 0), max_dummy)
     u_count = min(max(int(executed_units or 0), 0), max_units)
 
     dummy_boxes = (f_char * d_count) + (e_char * (max_dummy - d_count))
-    unit_boxes = (f_char * u_count) + (e_char * (max_units - u_count))
+    unit_boxes = (u_char * u_count) + (e_char * (max_units - u_count))
 
     if only_bar:
         return f"[{dummy_boxes} ┆ {unit_boxes}]"
@@ -50,4 +63,3 @@ def format_progress_single_track(
     if include_counts:
         return f"{bar} (더미 {d_count}/{max_dummy} 진입, 실제 {u_count}/{max_units})"
     return bar
-

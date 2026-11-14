@@ -58,7 +58,7 @@ DAILY_EVAL_END_MIN = 30        # 일봉 마감 평가 종료 분 (09:30 KST, 실
 WEEKEND_FREEZE_ENABLED = True  # 미국 본장 휴장일 주말 일봉 평가 동결 (True: 일/월 아침 스킵, False: 365일 실행)
 WEEKEND_FREEZE_DAYS = (0, 6)   # 동결 대상 요일 KST: 일요일(6 - 토요일치 캔들), 월요일(0 - 일요일치 캔들)
 PRESERVATION_BUFFER_PCT = 0.002 # 최소 이익 보존선 슬리피지 허용 버퍼 (0.2%)
-STAGE2_MA_BUFFER_PCT = float(os.getenv("STAGE2_MA_BUFFER_PCT", "0.002"))       # 2단계 1H 5MA 추세 이탈 판정 이격 버퍼 (0.2% - 낮/주말 수평 횡보 노이즈 방어)
+STAGE2_MA_BUFFER_PCT = float(os.getenv("STAGE2_MA_BUFFER_PCT", "0.004"))       # 2단계 1H 5MA 추세 이탈 판정 이격 버퍼 (0.4% - 낮/주말 횡보·1단계 직후 조기청산 완화)
 STAGE1_PARTIAL_EXIT_PCT = float(os.getenv("STAGE1_PARTIAL_EXIT_PCT", "50.0"))  # 1단계 목표가(ENTER_STAGE2) 도달 시 즉시 선익절 비율 (%, 기본 50.0 / 0이면 전량 2단계 감시, 100이면 전량 즉시 청산)
 STAGE1_PARTIAL_EXIT_RATIO = STAGE1_PARTIAL_EXIT_PCT / 100.0                    # 1단계 선익절 비율 환산값 (0.0 ~ 1.0)
 STAGE2_SIGNAL_MODE = "closed_candle"  # 2단계 4H 5MA 이탈 판정: "closed_candle"(마감된 4H 완성봉 종가, 권장) | "realtime"(진행 중 캔들 실시간가)
@@ -87,6 +87,7 @@ WEIGHT_BOOST = 1.25
 # 차수 시각화 인디케이터 이모지 설정
 PROGRESS_FILLED_ICON = "🟨"    # 체결 완료/소진 차수 아이콘 (노란색 사각 블록 '🟨', 또는 체크 박스 '☑️', '✅')
 PROGRESS_EMPTY_ICON = "⬛"     # 미체결/빈 슬롯 차수 아이콘 (검정색 사각 블록 '⬛', 또는 빈 네모 '⬜')
+PROGRESS_PARTIAL_ICON = "🟪"   # 1단계 부분익절 후 2단계 감시 중인 실전 차수 (보라색 사각 블록)
 
 # ------------------------------------------------------------------------------
 # 4. A 전략: Long DCA 조건 (PRD 섹션 3)

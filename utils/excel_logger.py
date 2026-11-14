@@ -109,6 +109,50 @@ def _extract_fee(note: str) -> float:
         return 0.0
 
 
+# 실제 주문 체결(또는 더미 소진) 이벤트: 일봉 candle_date(YYYY-MM-DD)만 넘어오면
+# 대시보드 '최근 체결' 정렬/오늘 필터에서 누락되므로 현재 KST 시분초로 보정합니다.
+# (2단계 ALL_CLEAR_TRAILING 은 trader 가 이미 시분초를 넘기므로 그대로 유지)
+_FILL_EVENTS_NEED_CLOCK = frozenset({
+    "BUY_UNIT",
+    "BUY_DUMMY",
+    "SELL_CLEAR",
+    "SELL_CLEAR_PARTIAL",
+})
+_DATE_ONLY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})$")
+_DATE_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?"
+)
+
+
+def _resolve_record_timestamp(date_str, event_type: str) -> str:
+    """
+    기록용 시각을 결정합니다.
+    - 실제 체결/더미 소진인데 날짜만(또는 00:00:00)이면 → 현재 KST 시분초
+    - 이미 시분초가 있으면 → 그대로 유지 (2단계 트레일링 청산 등)
+    - 그 외(정보성 이벤트) → 원문 유지, 빈 값이면 현재 KST
+    """
+    now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    s = str(date_str or "").strip()
+    if not s:
+        return now_kst
+
+    ev = str(event_type or "").strip()
+    if ev not in _FILL_EVENTS_NEED_CLOCK:
+        return s
+
+    if _DATE_ONLY_RE.match(s):
+        return now_kst
+
+    m = _DATE_TIME_RE.match(s)
+    if m:
+        hh = int(m.group(2))
+        mm = int(m.group(3))
+        ss = int(m.group(4) or 0)
+        if hh == 0 and mm == 0 and ss == 0:
+            return now_kst
+    return s
+
+
 def _make_trade_id(strategy_name, event_type, unit_label, date_str, price, qty, note) -> str:
     """
     같은 이벤트를 재전송해도 같은 ID 가 나오도록 결정적으로 생성합니다.
@@ -197,6 +241,10 @@ class ExcelLogger:
             wb = openpyxl.load_workbook(self.file_path)
             ws = wb[TRADE_SHEET_NAME] if TRADE_SHEET_NAME in wb.sheetnames else wb.active
 
+            # 일봉 candle_date 만 넘어온 실제 체결은 KST 시분초로 보정 (최근 체결 피드 누락 방지)
+            # trade_id 는 원본 date_str 을 유지해 재전송 시 중복 판정이 깨지지 않게 합니다.
+            record_ts = _resolve_record_timestamp(date_str, event_type)
+
             price_str = f"${price:,.2f}" if price and price > 0 else "-"
             qty_str = f"{qty:,.4f}" if qty and qty > 0 else "-"
             pnl_str = f"${realized_pnl:+,.2f}" if realized_pnl is not None else "-"
@@ -209,7 +257,7 @@ class ExcelLogger:
 
             if has_pnl_cols:
                 row_data = [
-                    date_str,
+                    record_ts,
                     strategy_name,
                     event_type,
                     price_str,
@@ -223,7 +271,7 @@ class ExcelLogger:
                 ]
             else:
                 row_data = [
-                    date_str,
+                    record_ts,
                     strategy_name,
                     event_type,
                     price_str,
@@ -292,7 +340,7 @@ class ExcelLogger:
                     pnl=g_pnl,
                     pnl_pct=g_pct,
                     note=g_note,
-                    timestamp=str(date_str) if date_str else None,   # 엑셀 원장과 같은 시각으로 기록
+                    timestamp=record_ts,  # 실제 체결은 KST 시분초 (candle_date 보정 포함)
                     trade_id=_make_trade_id(strategy_name, event_type, unit_label, date_str, g_price, g_qty, note),
                     event=event_type,
                     side=g_side,

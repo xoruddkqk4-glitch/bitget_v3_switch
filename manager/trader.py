@@ -666,6 +666,39 @@ class Trader:
             auto_update_chart=False
         )
 
+    def _build_strategies_progress_block(self) -> str:
+        """
+        텔레그램용 전략 A/B 보유·차수 현황 블록.
+        1단계 부분익절 후 2단계 감시(trailing_mode) 중이면 실전 차수 칸을 🟪 로 표시합니다.
+        """
+        lines = ["<b>📦 [전략별 보유 및 진행 현황]</b>", ""]
+        specs = (
+            ("strategy_A", "🔵", "A", "Long"),
+            ("strategy_B", "🔴", "B", "Short"),
+        )
+        for name, emoji, letter, side_label in specs:
+            s = self.cycles.get_strategy_state(name)
+            dummy = int(s.get("dummy_count", 0) or 0)
+            exec_u = int(s.get("executed_units", 0) or 0)
+            qty = float(s.get("total_qty", 0.0) or 0.0)
+            avg = float(s.get("avg_price", 0.0) or 0.0)
+            trailing = bool(s.get("trailing_mode", False)) and qty > 0
+            cycle_id = s.get("cycle_id", 1)
+            trail_tag = " [2단계 트레일링 감시 중]" if trailing else ""
+            bar = format_progress_single_track(
+                dummy, exec_u, only_bar=True, partial_exit=trailing
+            )
+            if qty > 0 and avg > 0:
+                pos_line = f"{qty:,.4f} Qty (평단 ${avg:,.2f})"
+            else:
+                pos_line = "미보유 (0.0000 Qty)"
+            lines.append(f"{emoji} <b>전략 {letter} ({side_label} | Cycle #{cycle_id}){trail_tag}</b>")
+            lines.append(f"  • 포지션: {pos_line}")
+            lines.append(f"  • <b>차수:</b> [더미 {dummy}/2 진입 | 실전 {exec_u}/13]")
+            lines.append(f"    {bar}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
     def _close_position(
         self,
         strategy_name: str,
@@ -796,6 +829,12 @@ class Trader:
             f"• <b>확정 손익:</b> <b>{pnl_usd:+,.2f} USD ({pnl_pct:+.2f}%)</b>\n"
             f"• <b>계좌 잔고:</b> ${self.last_total_balance:,.2f} (1.0 Unit: ${unit_base:,.2f})"
         )
+        # 2단계 전량 청산 시 전략 A/B 매수 차수 현황을 함께 전송 (청산 후 리셋된 최신 상태)
+        if "2단계" in log_title:
+            try:
+                close_notif += "\n\n" + self._build_strategies_progress_block()
+            except Exception as e_prog:
+                logger.warning(f"[Trader] 2단계 청산 차수 현황 첨부 실패: {e_prog}")
         self.notifier.send_message(close_notif)
 
         # 청산으로 늘어난 가용 잔고를 반영 (반대편 전략 헤지 유닛 산정용, 실패해도 청산 결과는 유지)

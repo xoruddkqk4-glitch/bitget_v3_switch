@@ -463,13 +463,18 @@ def run_pipeline(force: bool = False) -> bool:
         last_closed_b_str = f" (직전: {last_pnl_b:+,.2f} USD, {last_pct_b:+.2f}%)" if last_pnl_b != 0 else ""
 
         # 차수 게이지 바 (only_bar=True로 독립 행 분리)
+        # 1단계 부분익절 후 2단계 감시(trailing) 중이면 실전 차수 칸을 🟪 로 표시
         dummy_a = updated_state_a.get('dummy_count', 0)
         exec_a = updated_state_a.get('executed_units', 0)
-        gauge_bar_a = format_progress_single_track(dummy_a, exec_a, only_bar=True)
+        qty_a_for_bar = float(updated_state_a.get('total_qty', 0.0) or 0.0)
+        partial_a = bool(updated_state_a.get('trailing_mode')) and qty_a_for_bar > 0
+        gauge_bar_a = format_progress_single_track(dummy_a, exec_a, only_bar=True, partial_exit=partial_a)
 
         dummy_b = updated_state_b.get('dummy_count', 0)
         exec_b = updated_state_b.get('executed_units', 0)
-        gauge_bar_b = format_progress_single_track(dummy_b, exec_b, only_bar=True)
+        qty_b_for_bar = float(updated_state_b.get('total_qty', 0.0) or 0.0)
+        partial_b = bool(updated_state_b.get('trailing_mode')) and qty_b_for_bar > 0
+        gauge_bar_b = format_progress_single_track(dummy_b, exec_b, only_bar=True, partial_exit=partial_b)
 
         # 1.0 Unit 기본 금액 라벨: 상대편 보유 여부에 따라 단일/헤지 표기
         unit_info_a = f"헤지(롱) ${hedge_unit_usd:,.0f}" if qty_b > 0 else f"단일(롱) ${unit_base_usd:,.0f}"
