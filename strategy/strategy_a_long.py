@@ -7,6 +7,7 @@ A 전략: Long DCA 매매 전략 모듈 (PRD 섹션 3)
 from typing import Dict, Any, Tuple
 from strategy.base import BaseStrategy
 from config import (
+    ENTRY_DAILY_DIRECTION_FILTER,
     LONG_BEARISH_CANDLE_PCT,
     LONG_DAILY_DROP_PCT,
     DRAWDOWN_THRESHOLD,
@@ -35,15 +36,22 @@ class StrategyALong(BaseStrategy):
         prev_candle: Dict[str, Any]
     ) -> Tuple[bool, str]:
         """
-        롱 진입 조건 (OR):
-        1) 당일 음봉 <= -1.5% (종가 / 시가 - 1 <= -0.015)
-        2) 전일 대비 등락률 <= -3.0% (종가 / 전일종가 - 1 <= -0.030)
+        롱 진입 조건:
+        - (ENTRY_DAILY_DIRECTION_FILTER=True 시 필수) 전일 대비 하락: daily_change < 0.0
+        - OR 조건:
+          1) 당일 음봉 <= -1.5% (종가 / 시가 - 1 <= -0.015)
+          2) 전일 대비 등락률 <= -3.0% (종가 / 전일종가 - 1 <= -0.030)
         """
         candle_change = current_candle.get('candle_change', 0.0)
         daily_change = current_candle.get('daily_change', 0.0)
 
         is_bearish = candle_change <= LONG_BEARISH_CANDLE_PCT
         is_daily_drop = daily_change <= LONG_DAILY_DROP_PCT
+
+        if ENTRY_DAILY_DIRECTION_FILTER and daily_change >= 0.0:
+            if is_bearish:
+                return False, f"전일비 상승/보합으로 롱 진입 차단(전일비 {daily_change*100:+.2f}% >= 0.0%, 음봉 {candle_change*100:+.2f}% 무시)"
+            return False, f"음봉 하락 미달({candle_change*100:+.2f}% > {LONG_BEARISH_CANDLE_PCT*100:.1f}%) & 전일비 급락 미달({daily_change*100:+.2f}% > {LONG_DAILY_DROP_PCT*100:.1f}%)"
 
         if is_bearish and is_daily_drop:
             return True, f"음봉 하락({candle_change*100:+.2f}% <= {LONG_BEARISH_CANDLE_PCT*100:.1f}%) 및 전일비 급락({daily_change*100:+.2f}% <= {LONG_DAILY_DROP_PCT*100:.1f}%) 동시 충족"

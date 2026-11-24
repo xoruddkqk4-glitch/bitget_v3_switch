@@ -7,6 +7,7 @@ B 전략: Short DCA 매매 전략 모듈 (PRD 섹션 3)
 from typing import Dict, Any, Tuple
 from strategy.base import BaseStrategy
 from config import (
+    ENTRY_DAILY_DIRECTION_FILTER,
     SHORT_BULLISH_CANDLE_PCT,
     SHORT_DAILY_PUMP_PCT,
     REBOUND_THRESHOLD,
@@ -35,15 +36,22 @@ class StrategyBShort(BaseStrategy):
         prev_candle: Dict[str, Any]
     ) -> Tuple[bool, str]:
         """
-        숏 진입 조건 (OR):
-        1) 당일 양봉 >= +1.5% (종가 / 시가 - 1 >= +0.015)
-        2) 전일 대비 등락률 >= +3.0% (종가 / 전일종가 - 1 >= +0.030)
+        숏 진입 조건:
+        - (ENTRY_DAILY_DIRECTION_FILTER=True 시 필수) 전일 대비 상승: daily_change > 0.0
+        - OR 조건:
+          1) 당일 양봉 >= +1.5% (종가 / 시가 - 1 >= +0.015)
+          2) 전일 대비 등락률 >= +3.0% (종가 / 전일종가 - 1 >= +0.030)
         """
         candle_change = current_candle.get('candle_change', 0.0)
         daily_change = current_candle.get('daily_change', 0.0)
 
         is_bullish = candle_change >= SHORT_BULLISH_CANDLE_PCT
         is_daily_pump = daily_change >= SHORT_DAILY_PUMP_PCT
+
+        if ENTRY_DAILY_DIRECTION_FILTER and daily_change <= 0.0:
+            if is_bullish:
+                return False, f"전일비 하락/보합으로 숏 진입 차단(전일비 {daily_change*100:+.2f}% <= 0.0%, 양봉 {candle_change*100:+.2f}% 무시)"
+            return False, f"양봉 상승 미달({candle_change*100:+.2f}% < {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%) & 전일비 급등 미달({daily_change*100:+.2f}% < {SHORT_DAILY_PUMP_PCT*100:+.1f}%)"
 
         if is_bullish and is_daily_pump:
             return True, f"양봉 상승({candle_change*100:+.2f}% >= {SHORT_BULLISH_CANDLE_PCT*100:+.1f}%) 및 전일비 급등({daily_change*100:+.2f}% >= {SHORT_DAILY_PUMP_PCT*100:+.1f}%) 동시 충족"

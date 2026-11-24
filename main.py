@@ -396,6 +396,7 @@ def run_pipeline(force: bool = False) -> bool:
         current_price = indicators.get('exec_price') or signal_price
         eval_close = indicators.get('eval_close', signal_price)
         candle_change = indicators.get('candle_change', 0.0) * 100.0
+        daily_change = indicators.get('daily_change', 0.0) * 100.0
         if USE_LS:
             cd = str(indicators.get('candle_date', ''))
             md = f"{cd[5:7]}/{cd[8:10]}" if len(cd) >= 10 else cd
@@ -404,7 +405,7 @@ def run_pipeline(force: bool = False) -> bool:
         else:
             candle_basis = ""
             price_line = f"${current_price:,.2f}"
-        change_icon = "🔻" if candle_change < 0 else "🔺"
+        change_icon = "🔻" if daily_change < 0 else "🔺"
         trend_text = "상승" if indicators.get('is_sma60_rising') else "하락"
 
         # [전략 A - Long] 평가손익 및 실현손익
@@ -514,7 +515,7 @@ def run_pipeline(force: bool = False) -> bool:
         summary_msg = (
             f"<b>📊 [Bitget V3 Switch 일봉 보고]</b>\n\n"
             f"<b>🔥 [핵심 지표]</b>\n"
-            f"• <b>일봉 변동률:</b> {change_icon} <b>{candle_change:+.2f}%</b> (종가 ${eval_close:,.2f}){candle_basis}\n"
+            f"• <b>일봉 변동률:</b> {change_icon} <b>전일비 {daily_change:+.2f}%</b> / 캔들 {candle_change:+.2f}% (종가 ${eval_close:,.2f}){candle_basis}\n"
             f"• <b>실시간 현재가:</b> {price_line}\n"
             f"• <b>이평선:</b> SMA5 ${indicators['sma5']:,.2f} / SMA60 ${indicators['sma60']:,.2f} ({trend_text})\n"
             f"• <b>계좌:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"

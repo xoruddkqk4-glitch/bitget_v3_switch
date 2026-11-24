@@ -54,8 +54,9 @@
 ## 3. A 전략 및 B 전략 세부 매매 조건
 
 ### **A 전략: Long DCA (`strategy/strategy_a_long.py`)**
-1. **진입 조건 (OR):**
-   * 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$)
+1. **진입 조건 (`전일비 < 0%` 필수 AND 아래 OR 조건, `ENTRY_DAILY_DIRECTION_FILTER=True` 기본):**
+   * 전일 대비 하락 ($\text{종가}/\text{전일종가} - 1 < 0$) 상태에서:
+   * 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$) **OR**
    * 전일 대비 등락률 $\le -3.0\%$ ($\text{종가}/\text{전일종가} - 1 \le -0.030$)
 2. **청산 목표가 산출:**
    * **60일선 상승 중 ($SMA_{60} > SMA_{60, prev}$):** Target = $SMA_5 \times 1.02$ 이상 다다를 때 롱 전량 청산
@@ -66,8 +67,9 @@
 ---
 
 ### **B 전략: Short DCA (`strategy/strategy_b_short.py`)**
-1. **진입 조건 (OR):**
-   * 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$)
+1. **진입 조건 (`전일비 > 0%` 필수 AND 아래 OR 조건, `ENTRY_DAILY_DIRECTION_FILTER=True` 기본):**
+   * 전일 대비 상승 ($\text{종가}/\text{전일종가} - 1 > 0$) 상태에서:
+   * 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$) **OR**
    * 전일 대비 등락률 $\ge +3.0\%$ ($\text{종가}/\text{전일종가} - 1 \ge +0.030$)
 2. **청산 목표가 산출:**
    * **60일선 상승 중 ($SMA_{60} > SMA_{60, prev}$):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 숏 전량 청산
