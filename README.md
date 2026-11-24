@@ -900,3 +900,13 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 시나리오: 롱 평단 100·현물 99.5(목표 도달)·Bitget 110 → `ENTER_STAGE2`(수익률 +10%), Bitget 미지정 시 기존대로 `IMMEDIATE_EXIT`, 숏 대칭 동작 확인, 환산 102 × (99/100) = 100.98 확인
   - EC2 배포: 기존 파일 백업(`backups/pre_basis_fix_20261112_045750.tgz`) 후 SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치
   - 실서버 `state.json` 두 전략 모두 `trailing_mode=false` → 기존 보존선 마이그레이션 불필요, 크론(`3-59/5`) 모드라 프로세스 재기동 불필요
+
+
+## [2026-11-24 13:00] 업데이트 이력 (Commit ID: 8c2b645)
+- **수정 내용**:
+  - **일봉 롱·숏 동시 진입 방지(1안: 전일비 방향 필터) 구현 계획서 작성 (`docs/prd/20261124_1255_daily_change_direction_filter_plan.md`)**:
+    - 2026-11-24 05:58 KST (`2026-11-23` ET, 전일 종가 `$30.88` → 시가 `$44.82` → 종가 `$43.37`, 캔들 `-3.24%` / 전일비 `+40.45%`)에서 롱 실전 5차와 숏 더미 1차가 동시 발생한 원인 분석 및 보완 설계 문서화
+    - 1안(롱: `daily_change < 0`, 숏: `daily_change > 0` 방향 필터), `.env` 토글(`ENTRY_DAILY_DIRECTION_FILTER`), 텔레그램 보고서 전일비/캔들 병기, 7개 시나리오 검증 계획 정의
+- **검증 결과**:
+  - 계획서 문서 작성 완료 (소스 코드 미수정, `/apply` 전 단계)
+  - 파이썬 런타임 코드 변경 없음 → AWS EC2 실서버 배포 생략
