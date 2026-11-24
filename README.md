@@ -59,9 +59,10 @@
 ## 📈 3. 전략별 세부 매매 조건
 
 ### **A 전략: Long DCA (`strategy/strategy_a_long.py`)**
-1. **진입 조건 (OR, 전일 마감 완성봉 기준):**
-   * 전일 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$)
-   * 전일 대비 등락률 $\le -3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \le -0.030$)
+1. **진입 조건 (`전일비 < 0%` 필수 AND 아래 OR 조건, `ENTRY_DAILY_DIRECTION_FILTER=True` 기본):**
+   * 전일 대비 하락($\text{종가}/\text{전일종가} - 1 < 0$) 상태에서:
+   * 음봉 $\le -1.5\%$ ($\text{종가}/\text{시가} - 1 \le -0.015$) **OR**
+   * 전일 대비 등락률 $\le -3.0\%$ ($\text{종가}/\text{전일종가} - 1 \le -0.030$)
 2. **2단계 스마트 트레일링 청산 규칙:**
    * **1단계 확인 (15:54 ~ 15:59 ET, 미국 SOXL 현물 장마감 직전 기준):**
      * **60일선 상승 중:** Target = $SMA_5 \times 1.02$ 이상 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
@@ -75,9 +76,10 @@
 ---
 
 ### **B 전략: Short DCA (`strategy/strategy_b_short.py`)**
-1. **진입 조건 (OR, 전일 마감 완성봉 기준):**
-   * 전일 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$)
-   * 전일 대비 등락률 $\ge +3.0\%$ ($\text{전일종가}/\text{전전일종가} - 1 \ge +0.030$)
+1. **진입 조건 (`전일비 > 0%` 필수 AND 아래 OR 조건, `ENTRY_DAILY_DIRECTION_FILTER=True` 기본):**
+   * 전일 대비 상승($\text{종가}/\text{전일종가} - 1 > 0$) 상태에서:
+   * 양봉 $\ge +1.5\%$ ($\text{종가}/\text{시가} - 1 \ge +0.015$) **OR**
+   * 전일 대비 등락률 $\ge +3.0\%$ ($\text{종가}/\text{전일종가} - 1 \ge +0.030$)
 2. **2단계 스마트 트레일링 청산 규칙 (대칭 구조):**
    * **1단계 확인 (15:54 ~ 15:59 ET, 미국 SOXL 현물 장마감 직전 기준):**
    * **60일선 상승 중 (단기 눌림):** Target = $SMA_5 \times 0.98$ 이하 다다를 때 $\rightarrow$ **2단계 감시 모드 돌입** (`trailing_mode = True`, 보존선 설정)
@@ -910,3 +912,17 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
 - **검증 결과**:
   - 계획서 문서 작성 완료 (소스 코드 미수정, `/apply` 전 단계)
   - 파이썬 런타임 코드 변경 없음 → AWS EC2 실서버 배포 생략
+
+
+## [2026-11-24 13:08] 업데이트 이력 (Commit ID: 43a0174)
+- **수정 내용**:
+  - **일봉 롱·숏 동시 진입 방지 — 전일비(`daily_change`) 방향 필터 구현 및 EC2 실서버 배포 (`docs/prd/20261124_1255_daily_change_direction_filter_plan.md` /apply)**:
+    - `config.py`: `ENTRY_DAILY_DIRECTION_FILTER` 환경변수 토글 추가 (기본값 `true`, `.env`에서 `false` 설정 시 기존 `OR` 동작으로 즉시 롤백 가능)
+    - `strategy/strategy_a_long.py`: `ENTRY_DAILY_DIRECTION_FILTER` 활성 시 `daily_change >= 0.0`이면 음봉 여부와 무관하게 롱 진입 차단 및 차단 사유 반환 (`전일비 < 0%` 필수)
+    - `strategy/strategy_b_short.py`: `ENTRY_DAILY_DIRECTION_FILTER` 활성 시 `daily_change <= 0.0`이면 양봉 여부와 무관하게 숏 진입 차단 및 차단 사유 반환 (`전일비 > 0%` 필수)
+    - `main.py`: 텔레그램 일봉 보고서 `일봉 변동률`에 `전일비`와 `캔들` 등락률을 함께 표기하고 아이콘(`🔻`/`🔺`) 기준을 `daily_change`로 정렬
+    - `docs/prd/bitget_v3_switch_prd.md`, `README.md`: 섹션 3 A/B 전략 진입 조건 설명 동기화
+- **검증 결과**:
+  - 로컬 정적 검증: `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py main.py` 오류 0건 통과
+  - 단위 테스트: 7개 시나리오(2026-11-23 `+40.45% / -3.24%` 사례 포함) 일치, `daily_change × candle_change` 63개 조합 동시 진입 0건, `ENTRY_DAILY_DIRECTION_FILTER=false` 롤백 검증 통과
+  - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_dir_filter_20261124.tgz`), 4개 `.py` 파일 SCP 업로드, 원격 venv `py_compile` 및 시나리오 테스트 통과 (`3-59/5` 크론 모드라 별도 프로세스 재기동 불필요)
