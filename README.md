@@ -926,3 +926,19 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 정적 검증: `python -m py_compile config.py strategy/strategy_a_long.py strategy/strategy_b_short.py main.py` 오류 0건 통과
   - 단위 테스트: 7개 시나리오(2026-11-23 `+40.45% / -3.24%` 사례 포함) 일치, `daily_change × candle_change` 63개 조합 동시 진입 0건, `ENTRY_DAILY_DIRECTION_FILTER=false` 롤백 검증 통과
   - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_dir_filter_20261124.tgz`), 4개 `.py` 파일 SCP 업로드, 원격 venv `py_compile` 및 시나리오 테스트 통과 (`3-59/5` 크론 모드라 별도 프로세스 재기동 불필요)
+
+
+## [2026-11-27 11:05] 업데이트 이력 (Commit ID: 2d8ed98)
+- **수정 내용**:
+  - **미국 현물 일봉 시가(Open) 교차검증 및 진단 로그 추가 (선택지 3번: 현행 매매 로직 유지 + 데이터 검증)**:
+    - 배경: 2026-11-25 ET 일봉 보고 `전일비 -2.21% / 캔들 +18.07%` (시가 $27.00, 전일 종가 $32.60, 갭 −17%)에서 롱(필터 통과·조건 미달)과 숏(방향 필터 차단)의 판정 사유가 달라 보여 기준 일관성 및 시가 데이터 오류 여부 점검
+    - `config.py`: `OPEN_GAP_ALERT_PCT`(기본 8%), `OPEN_CROSSCHECK_TOL_PCT`(0.5%), `OPEN_SUSPECT_BLOCK_CANDLE`(기본 `false` = 경고·로그만), `BAR_AUDIT_FILE`(`logs/us_bar_audit.jsonl`) 추가
+    - `api/ls_client.py`: 일봉 데이터 출처(`open_source`) 기록, `fetch_quote_open()`(LS g3101 시가), `audit_today_open()`(갭 임계 초과 시 야후 원본·LS 교차검증), `audit_bar_report()` 추가 (공통모듈 미수정)
+    - `main.py`: 판정 직전 시가 검증 → 시가 의심 시 텔레그램 경고(1시간 쿨다운), `OPEN_SUSPECT_BLOCK_CANDLE=true`일 때만 캔들 조건 무효화, 일봉 평가마다 `logs/us_bar_audit.jsonl` 누적, 일봉 보고 [핵심 지표]에 `시가 검증` 줄 추가, `--audit-bar [YYYY-MM-DD]` 수동 점검 CLI
+    - `backtest/entry_rule_backtest.py` 신규: 현행(방향필터 + 캔들/전일비) vs 전일비 단일(±1.5/2/3%) vs 캔들 단일(±1.5%) vs 필터 없음 비교 (실전 `check_stage1_exit_signal` 재사용, 2단계는 일봉 근사), 결과 `backtest/results_entry_rule.csv`
+    - `.env.example`, `docs/prd/bitget_v3_switch_prd.md`: 신규 환경변수 및 "미국 현물 당일 시가 검증" 절 추가
+- **검증 결과**:
+  - 로컬 `python -m py_compile config.py main.py api/ls_client.py backtest/entry_rule_backtest.py` 오류 0건
+  - `--audit-bar 2026-11-25`: yfinance·야후HTTP·LS g3204 모두 시가 $27.00 / 저가 $24.61 / 종가 $32.02 일치 → **데이터 오류 아닌 실제 갭(−17.18%)** 확인
+  - 백테스트(SOXL 2015-01 ~ 2026-11, 전략별 $10,000): 현행 **+$10,889**(MDD −$5,417) / 전일비±1.5% +$10,336(−$4,846) / 전일비±3% +$7,759(−$3,733) / 캔들±1.5% +$9,173(**−$6,435, 최악**) / 필터 없음 +$13,173(공유 증거금 미반영으로 과대평가 가능) → 현행 진입 기준 유지
+  - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_open_audit_20261127.tgz`), `config.py`·`main.py`·`api/ls_client.py` SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치, 원격 `--audit-bar 2026-11-25` 야후HTTP·LS 시가 일치 (원격 yfinance 미사용 환경), `3-59/5` 크론 모드라 별도 프로세스 재기동 불필요 (11:03 KST 크론 틱 정상)
