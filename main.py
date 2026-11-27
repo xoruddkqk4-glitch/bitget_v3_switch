@@ -53,6 +53,7 @@ from config import (
     SHORT_EXIT_FALLING_SMA_DEEP,
     OPEN_SUSPECT_BLOCK_CANDLE,
     BAR_AUDIT_FILE,
+    BAR_AUDIT_RETENTION_DAYS,
     validate_live_config,
 )
 from api import ls_client
@@ -147,9 +148,35 @@ def append_bar_audit(indicators: Dict[str, Any], open_audit: Optional[Dict[str, 
             "candle_suppressed": bool(indicators.get("candle_suppressed")),
             "reason": oa.get("reason"),
         }
+        new_line = json.dumps(record, ensure_ascii=False)
         os.makedirs(os.path.dirname(BAR_AUDIT_FILE) or ".", exist_ok=True)
-        with open(BAR_AUDIT_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        if BAR_AUDIT_RETENTION_DAYS <= 0:
+            with open(BAR_AUDIT_FILE, "a", encoding="utf-8") as f:
+                f.write(new_line + "\n")
+            return
+
+        cutoff_str = (datetime.now(ET).date() - timedelta(days=BAR_AUDIT_RETENTION_DAYS)).strftime("%Y-%m-%d")
+        kept = []
+        if os.path.exists(BAR_AUDIT_FILE):
+            with open(BAR_AUDIT_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    raw_line = line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        rec = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    rec_date = str(rec.get("et_date") or rec.get("logged_at_kst") or "")[:10]
+                    if len(rec_date) == 10 and rec_date >= cutoff_str:
+                        kept.append(raw_line)
+
+        kept.append(new_line)
+        tmp_path = f"{BAR_AUDIT_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(kept) + "\n")
+        os.replace(tmp_path, BAR_AUDIT_FILE)
     except Exception as e:
         logger.warning(f"[OpenAudit] 진단 로그 기록 실패: {e}")
 

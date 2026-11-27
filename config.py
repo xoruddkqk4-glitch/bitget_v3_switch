@@ -51,6 +51,7 @@ OPEN_GAP_ALERT_PCT = float(os.getenv("OPEN_GAP_ALERT_PCT", "0.08"))            #
 OPEN_CROSSCHECK_TOL_PCT = float(os.getenv("OPEN_CROSSCHECK_TOL_PCT", "0.005"))  # 소스 간 시가 허용 편차 (0.5%) 초과 시 시가 의심
 OPEN_SUSPECT_BLOCK_CANDLE = os.getenv("OPEN_SUSPECT_BLOCK_CANDLE", "false").lower() in ("true", "1", "yes")  # true: 시가 의심 시 캔들(±1.5%) 조건만 무효화 / false(기본): 경고·로그만
 BAR_AUDIT_FILE = os.path.join("logs", "us_bar_audit.jsonl")    # 일봉 시가 검증 진단 로그 (JSON Lines 누적)
+BAR_AUDIT_RETENTION_DAYS = int(os.getenv("BAR_AUDIT_RETENTION_DAYS", "730"))   # 진단 로그 보관 기간(일, 기본 730일=2년, 0 이하이면 무제한)
 
 # 일봉 평가 시각 (미국 동부시간, 서머타임 자동) - DAILY_SIGNAL_SOURCE == "ls"
 DAILY_EVAL_ET_HOUR = 15
