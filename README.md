@@ -942,3 +942,15 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - `--audit-bar 2026-11-25`: yfinance·야후HTTP·LS g3204 모두 시가 $27.00 / 저가 $24.61 / 종가 $32.02 일치 → **데이터 오류 아닌 실제 갭(−17.18%)** 확인
   - 백테스트(SOXL 2015-01 ~ 2026-11, 전략별 $10,000): 현행 **+$10,889**(MDD −$5,417) / 전일비±1.5% +$10,336(−$4,846) / 전일비±3% +$7,759(−$3,733) / 캔들±1.5% +$9,173(**−$6,435, 최악**) / 필터 없음 +$13,173(공유 증거금 미반영으로 과대평가 가능) → 현행 진입 기준 유지
   - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_open_audit_20261127.tgz`), `config.py`·`main.py`·`api/ls_client.py` SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치, 원격 `--audit-bar 2026-11-25` 야후HTTP·LS 시가 일치 (원격 yfinance 미사용 환경), `3-59/5` 크론 모드라 별도 프로세스 재기동 불필요 (11:03 KST 크론 틱 정상)
+
+
+## [2026-11-27 11:34] 업데이트 이력 (Commit ID: 51bb848)
+- **수정 내용**:
+  - **`logs/us_bar_audit.jsonl` 최근 2년(730일) 자동 정리 설정 추가**:
+    - `config.py`: `BAR_AUDIT_RETENTION_DAYS` 추가 (기본값 `730`일 = 최근 2년, `0` 이하 설정 시 무제한 보관)
+    - `main.py`: `append_bar_audit()`에서 매 기록 시 `et_date`(또는 `logged_at_kst`) 기준 `BAR_AUDIT_RETENTION_DAYS`일 이내 레코드와 신규 레코드만 유지해 임시 파일(`us_bar_audit.jsonl.tmp`) 작성 후 `os.replace`로 원자적 교체 (`BAR_AUDIT_RETENTION_DAYS <= 0`일 때는 기존 단순 append 유지)
+    - `.env.example`, `docs/prd/bitget_v3_switch_prd.md`: `BAR_AUDIT_RETENTION_DAYS=730` 예시 및 진단 로그 보관 기간·자동 정리 명세 추가
+- **검증 결과**:
+  - 로컬 정적 검증: `python -m py_compile config.py main.py` 오류 0건 통과
+  - 단위 동작 검증: 임시 `.jsonl` 파일에 `2024-01-01`(2년 초과)과 `2026-01-15`(2년 이내) 기록 후 `append_bar_audit()` 호출 시 `2024-01-01` 제거 및 `['2026-01-15', '2026-11-27']` 2줄 유지 확인
+  - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_audit_retention_20261127.tgz`), `config.py`·`main.py` SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치(`e5696063db3f76147f301140b4d06483` / `b6768c5a762b45ab124571b68da4eec8`), `3-59/5` 크론 모드라 프로세스 재기동 불필요 (11:33:03 KST 크론 틱 정상 확인)
