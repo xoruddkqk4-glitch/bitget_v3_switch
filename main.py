@@ -9,7 +9,9 @@ bitget_v3_switch 2단계 스마트 트레일링 자동매매 시스템 메인 �
 """
 
 import argparse
+import json
 import math
+import os
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -49,6 +51,8 @@ from config import (
     SHORT_EXIT_RISING_SMA,
     SHORT_EXIT_FALLING_SMA_MILD,
     SHORT_EXIT_FALLING_SMA_DEEP,
+    OPEN_SUSPECT_BLOCK_CANDLE,
+    BAR_AUDIT_FILE,
     validate_live_config,
 )
 from api import ls_client
@@ -79,6 +83,75 @@ MIN_4H_CANDLES = 6       # 4시간봉 지표 산출 최소 캔들 수 (완성봉
 def escape_tg(text: str) -> str:
     """텔레그램 HTML 파싱 오류 방지를 위한 특수문자 이스케이프"""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _fmt_px(v: Any) -> str:
+    """가격 표시 (None/0이면 '-')"""
+    try:
+        return f"${float(v):,.2f}" if v and float(v) > 0 else "-"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def format_open_audit_line(open_audit: Optional[Dict[str, Any]]) -> str:
+    """일봉 보고서용 시가 검증 1줄 (미국 현물 모드 전용, 없으면 빈 문자열)"""
+    if not open_audit or open_audit.get("gap") is None:
+        return ""
+    gap_pct = float(open_audit["gap"]) * 100.0
+    base = (
+        f"• <b>시가 검증:</b> 시가 {_fmt_px(open_audit.get('primary_open'))} / "
+        f"전일종가 {_fmt_px(open_audit.get('prev_close_adj'))} (갭 {gap_pct:+.2f}%)"
+    )
+    if open_audit.get("open_suspect"):
+        dev = float(open_audit.get("max_dev") or 0.0) * 100.0
+        action = "캔들 조건 무효화" if OPEN_SUSPECT_BLOCK_CANDLE else "경고만"
+        return (
+            f"{base} ⚠️ 소스 불일치(야후 {_fmt_px(open_audit.get('yahoo_open'))} / "
+            f"LS {_fmt_px(open_audit.get('ls_open'))}, 편차 {dev:.2f}%) → {action}\n"
+        )
+    if open_audit.get("crosschecked"):
+        return f"{base} ✅ 교차검증 일치\n"
+    if "교차검증 불가" in str(open_audit.get("reason", "")):
+        return f"{base} ❔ 교차검증 불가\n"
+    return f"{base}\n"
+
+
+def append_bar_audit(indicators: Dict[str, Any], open_audit: Optional[Dict[str, Any]], live_price: Optional[float]):
+    """일봉 평가 1회당 시가 검증 진단 기록 1줄을 JSON Lines로 누적합니다. (실패해도 파이프라인 계속)"""
+    try:
+        oa = open_audit or {}
+
+        def _r(v, nd=4):
+            try:
+                return round(float(v), nd) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        record = {
+            "logged_at_kst": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "et_date": oa.get("et_date") or indicators.get("candle_date"),
+            "source": oa.get("source"),
+            "open": _r(oa.get("primary_open")),
+            "yahoo_open": _r(oa.get("yahoo_open")),
+            "ls_open": _r(oa.get("ls_open")),
+            "prev_close_adj": _r(oa.get("prev_close_adj")),
+            "prev_close_raw": _r(oa.get("prev_close_raw")),
+            "live_price": _r(live_price),
+            "eval_close": _r(indicators.get("eval_close")),
+            "gap_pct": _r((oa.get("gap") or 0.0) * 100.0, 2) if oa.get("gap") is not None else None,
+            "candle_change_pct": _r(float(indicators.get("candle_change_raw", indicators.get("candle_change", 0.0))) * 100.0, 2),
+            "daily_change_pct": _r(float(indicators.get("daily_change", 0.0)) * 100.0, 2),
+            "max_dev_pct": _r((oa.get("max_dev") or 0.0) * 100.0, 3) if oa.get("max_dev") is not None else None,
+            "crosschecked": bool(oa.get("crosschecked")),
+            "open_suspect": bool(oa.get("open_suspect")),
+            "candle_suppressed": bool(indicators.get("candle_suppressed")),
+            "reason": oa.get("reason"),
+        }
+        os.makedirs(os.path.dirname(BAR_AUDIT_FILE) or ".", exist_ok=True)
+        with open(BAR_AUDIT_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"[OpenAudit] 진단 로그 기록 실패: {e}")
 
 
 def send_live_halt_alert(stage: str, reason: str):
@@ -317,6 +390,7 @@ def run_pipeline(force: bool = False) -> bool:
 
         # 2. 일봉 OHLCV 수집
         live_price: Optional[float] = None
+        open_audit: Optional[Dict[str, Any]] = None
         if USE_LS:
             df = load_us_daily_or_abort()
             last_bar = str(df['datetime'].iloc[-1])
@@ -358,6 +432,25 @@ def run_pipeline(force: bool = False) -> bool:
             logger.info(f"[Pipeline] 이미 평가 완료된 일봉({eval_candle}) - 중복 실행을 건너뜁니다. (재평가: --run-once --force)")
             return True
 
+        # 4-1-1. 미국 현물 당일 시가 검증 (갭 이상치 교차검증, 기본은 경고·로그만)
+        indicators['candle_change_raw'] = indicators.get('candle_change', 0.0)
+        if USE_LS:
+            open_audit = ls_client.audit_today_open(df)
+            indicators['open_audit'] = open_audit
+            if open_audit.get("open_suspect"):
+                suppressed = OPEN_SUSPECT_BLOCK_CANDLE
+                if suppressed:
+                    indicators['candle_change'] = 0.0
+                    indicators['candle_suppressed'] = True
+                if should_send_alert("us_open_suspect", ALERT_COOLDOWN_SEC):
+                    notifier.send_message(
+                        f"<b>⚠️ [Bitget V3 Switch 시가 데이터 의심]</b>\n"
+                        f"• <b>판정 봉:</b> {escape_tg(open_audit.get('et_date'))} ET ({escape_tg(open_audit.get('source'))})\n"
+                        f"• <b>사유:</b> {escape_tg(open_audit.get('reason'))}\n"
+                        f"• <b>시가:</b> 기본 {_fmt_px(open_audit.get('primary_open'))} / 야후 {_fmt_px(open_audit.get('yahoo_open'))} / LS {_fmt_px(open_audit.get('ls_open'))}\n"
+                        f"• <b>조치:</b> {'캔들 조건(±1.5%) 무효화 후 판정' if suppressed else '경고만 (OPEN_SUSPECT_BLOCK_CANDLE=false)'}"
+                    )
+
         # 4-2. 주문 기준가: Bitget 선물 현재가 (신호는 미국 현물, 주문 수량·기준가는 Bitget)
         if USE_LS:
             indicators['exec_price'] = bitget_client.fetch_last_price(fallback=indicators['signal_price'])
@@ -369,6 +462,10 @@ def run_pipeline(force: bool = False) -> bool:
         # 5. Trader 주문 집행 및 1차 청산 / 매수 평가
         logs = trader.process_daily_cycle(indicators, blocked=blocked)
         cycle_manager.mark_daily_evaluated(eval_candle)
+
+        # 5-00. 미국 현물 시가 검증 진단 로그 누적 (logs/us_bar_audit.jsonl)
+        if USE_LS:
+            append_bar_audit(indicators, open_audit, live_price)
 
         # 5-0. 대시보드 STATE_SYNC용 일봉 평가 지표 스냅샷
         try:
@@ -516,6 +613,7 @@ def run_pipeline(force: bool = False) -> bool:
             f"<b>📊 [Bitget V3 Switch 일봉 보고]</b>\n\n"
             f"<b>🔥 [핵심 지표]</b>\n"
             f"• <b>일봉 변동률:</b> {change_icon} <b>전일비 {daily_change:+.2f}%</b> / 캔들 {candle_change:+.2f}% (종가 ${eval_close:,.2f}){candle_basis}\n"
+            f"{format_open_audit_line(open_audit)}"
             f"• <b>실시간 현재가:</b> {price_line}\n"
             f"• <b>이평선:</b> SMA5 ${indicators['sma5']:,.2f} / SMA60 ${indicators['sma60']:,.2f} ({trend_text})\n"
             f"• <b>계좌:</b> ${total_balance:,.2f} (가용: ${free_margin:,.2f})\n"
@@ -729,7 +827,12 @@ def main():
     parser.add_argument("--reconcile", action="store_true", help="state.json과 거래소 실제 포지션을 대조하여 출력합니다.")
     parser.add_argument("--adopt-exchange", action="store_true", help="--reconcile과 함께 사용: 거래소 포지션 값을 state.json에 채택합니다.")
     parser.add_argument("--test-order", choices=["long", "short"], help="최소 금액 실주문 진입 후 즉시 청산 테스트 (state 미기록)")
+    parser.add_argument("--audit-bar", nargs="?", const="", default=None, metavar="YYYY-MM-DD",
+                        help="미국 현물 일봉 시가를 yfinance/야후HTTP/LS 소스별로 비교 출력합니다. (기본: 최근 거래일, 주문·state 변경 없음)")
     args = parser.parse_args()
+
+    if args.audit_bar is not None:
+        sys.exit(ls_client.audit_bar_report(args.audit_bar))
 
     if args.update_chart:
         logger.info("[Main] --update-chart 모드로 손익차트 시트 갱신을 실행합니다.")

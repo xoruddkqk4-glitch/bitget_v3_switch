@@ -46,6 +46,12 @@ US_SYMBOL = "SOXL"
 LS_OHLCV_LIMIT = 120                                            # SMA60 + 여유
 LS_CHANGE_MODE = "REAL"                                         # myLS_StockInfo.yaml REAL_APP_KEY 접두사와 일치
 
+# 미국 현물 당일 시가 검증 (DAILY_SIGNAL_SOURCE == "ls" 전용)
+OPEN_GAP_ALERT_PCT = float(os.getenv("OPEN_GAP_ALERT_PCT", "0.08"))            # |시가/전일종가 - 1| 이 값 초과 시 2차 소스 교차검증 (8%)
+OPEN_CROSSCHECK_TOL_PCT = float(os.getenv("OPEN_CROSSCHECK_TOL_PCT", "0.005"))  # 소스 간 시가 허용 편차 (0.5%) 초과 시 시가 의심
+OPEN_SUSPECT_BLOCK_CANDLE = os.getenv("OPEN_SUSPECT_BLOCK_CANDLE", "false").lower() in ("true", "1", "yes")  # true: 시가 의심 시 캔들(±1.5%) 조건만 무효화 / false(기본): 경고·로그만
+BAR_AUDIT_FILE = os.path.join("logs", "us_bar_audit.jsonl")    # 일봉 시가 검증 진단 로그 (JSON Lines 누적)
+
 # 일봉 평가 시각 (미국 동부시간, 서머타임 자동) - DAILY_SIGNAL_SOURCE == "ls"
 DAILY_EVAL_ET_HOUR = 15
 DAILY_EVAL_ET_START_MIN = 54
