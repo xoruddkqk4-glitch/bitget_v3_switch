@@ -166,7 +166,7 @@ python main.py --run-once
 ```cron
 3-59/5 * * * * cd /var/autobot/bitget_v3_switch && /usr/bin/python3 -u main.py --cron >> /var/autobot/bitget_v3_switch/logs/cron.log 2>&1
 ```
-* **15:54 ~ 15:59 ET (미국장 마감 직전, 서머타임 자동):** 일봉 1차 평가 및 매수 진입 파이프라인 1회 가동 (`3-59/5` 기준 15:58 틱, `*/5` 기준 15:55 틱)
+* **15:54 ~ 15:59 ET (미국장 마감 직전, 서머타임 자동 / 조기폐장일 12:54 ~ 12:59 ET 자동 대응):** 일봉 1차 평가 및 매수 진입 파이프라인 1회 가동 (`3-59/5` 기준 15:58 틱, `*/5` 기준 15:55 틱)
   * `DAILY_SIGNAL_SOURCE=bitget` 롤백 시에는 기존대로 09:10 ~ 09:30 KST
 * **그 외 시간대:** 2단계 트레일링 활성 시에만 1시간봉 감시 수행, 비활성 시 **0.1초 즉시 무부하 종료**
 
@@ -954,3 +954,20 @@ tail -f /home/ubuntu/bitget_v3_switch/logs/trading.log
   - 로컬 정적 검증: `python -m py_compile config.py main.py` 오류 0건 통과
   - 단위 동작 검증: 임시 `.jsonl` 파일에 `2024-01-01`(2년 초과)과 `2026-01-15`(2년 이내) 기록 후 `append_bar_audit()` 호출 시 `2024-01-01` 제거 및 `['2026-01-15', '2026-11-27']` 2줄 유지 확인
   - AWS EC2 실서버 배포: 기존 파일 백업(`backups/pre_audit_retention_20261127.tgz`), `config.py`·`main.py` SCP 업로드, 원격 venv `py_compile` 통과, MD5 로컬과 일치(`e5696063db3f76147f301140b4d06483` / `b6768c5a762b45ab124571b68da4eec8`), `3-59/5` 크론 모드라 프로세스 재기동 불필요 (11:33:03 KST 크론 틱 정상 확인)
+
+
+## [2026-11-28 11:06] 업데이트 이력 (Commit ID: 4208799)
+- **수정 내용**:
+  - **미국장 조기폐장(13:00 ET) 대응 일봉 평가 시간대 및 개장 판정 개선 (`api/ls_client.py`, `main.py`)**:
+    - `api/ls_client.py`:
+      - `US_EARLY_CLOSE_OVERRIDES`, `_US_CLOSE_MEM_CACHE`, 임시 JSON 파일 캐시(`us_market_close_cache.json`, 최대 30일치 유지) 추가
+      - `_get_us_market_close_et_rule(target_date)`: 표준 라이브러리 기반 NYSE 정례 조기폐장(7월 3일 월~목, 11월 블랙프라이데이, 12월 24일 월~목 → `13:00 ET`, 주말 `None`, 정규장 `16:00 ET`) 폴백 규칙 구현
+      - `get_us_market_close_et(target_date=None)`: 수동 오버라이드 → 메모리 캐시 → 파일 캐시 → `pandas_market_calendars`(설치 시 NYSE 스케줄 조회) → 정례 규칙 폴백 순의 하이브리드 마감 시각 조회 함수 구현
+      - `is_us_market_open()`: LS `IsMarketOpen` 조회 실패 시 로컬 시계 폴백이 고정 `16:00 ET` 대신 `get_us_market_close_et(now.date())`를 참조하도록 개선
+    - `main.py`:
+      - `is_daily_evaluation_window()`: `USE_LS` 활성 시 `ls_client.get_us_market_close_et(et_now.date())`로 마감 시각을 조회하여 평가 시간(`target_hour = close_et[0] - 1`, 정규장 `15:54~15:59 ET` / 조기폐장 `12:54~12:59 ET`)을 동적으로 판정하고 주말·휴장일(`None`) 차단
+      - `get_eval_window_label()` 추가 및 `run_cron_tick()` 로그에 `[조기폐장]` 동적 라벨 반영
+  - `README.md`: 섹션 5.3 크론 실행 설명에 조기폐장일 `12:54 ~ 12:59 ET` 자동 대응 안내 추가
+- **검증 결과**:
+  - 로컬 정적·단위 검증: `python -m py_compile api/ls_client.py main.py` 오류 0건 통과, `pandas_market_calendars` 설치 확인(`True`), `get_us_market_close_et` 주요 날짜 검증 통과 (`2026-11-27` 블랙프라이데이 `(13, 0)`, `2026-11-28` 토요일 `None`, `2026-11-30` 정규장 `(16, 0)`, `2026-12-24` 크리스마스 이브 `(13, 0)`), `main.get_eval_window_label()` → `12:54~12:59 ET [조기폐장]` 확인
+  - AWS EC2 실서버(`/var/autobot/bitget_v3_switch/`) 동기화 및 원격 검증: `api/ls_client.py`·`main.py` MD5 로컬과 일치(`55ba901c4ae6bfd6b16f24f366366861` / `e705ba216ce8f087771b60aedc952f97`), 원격 venv `py_compile` 통과, 원격 venv(`pandas_market_calendars` 미설치 환경)에서 정례 규칙 폴백으로 동일 4개 날짜 및 `12:54~12:59 ET [조기폐장]` 라벨 정상 반환 확인, `3-59/5` 크론 모드라 프로세스 재기동 불필요 및 최근 `cron.log`(`11:03:04 KST` 틱) 정상 확인
