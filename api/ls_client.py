@@ -6,9 +6,12 @@ LS 공통모듈(LS_Common_new / LS_API_Helper_US_new) 기반 미국 현물 일�
 - LS 설정 파일(./myLS_StockInfo.yaml)과 토큰(./ls_real_token.json)은 현재 작업 폴더 기준이므로 봇 루트에서 실행해야 합니다.
 """
 
+import json
+import os
+import tempfile
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -22,6 +25,85 @@ ET = ZoneInfo("America/New_York")
 OHLCV_RETRY_DELAYS = (0.0, 2.0, 4.0)
 YF_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart/{code}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+US_EARLY_CLOSE_OVERRIDES = {}  # 돌발 임시 조기폐장 수동 지정 예: {"2026-12-31": (13, 0)}
+_US_CLOSE_CACHE_PATH = os.path.join(tempfile.gettempdir(), "us_market_close_cache.json")
+_US_CLOSE_MEM_CACHE = {}
+
+
+def _get_us_market_close_et_rule(target_date) -> Optional[Tuple[int, int]]:
+    """표준 라이브러리 기반 NYSE 정례 조기폐장(13:00 ET) 폴백 규칙."""
+    wd = target_date.weekday()
+    if wd >= 5:
+        return None
+    ds = target_date.isoformat()
+    if ds in US_EARLY_CLOSE_OVERRIDES:
+        return tuple(US_EARLY_CLOSE_OVERRIDES[ds])
+    if (
+        (target_date.month == 7 and target_date.day == 3 and wd < 4)
+        or (target_date.month == 11 and wd == 4 and 23 <= target_date.day <= 29)
+        or (target_date.month == 12 and target_date.day == 24 and wd < 4)
+    ):
+        return (13, 0)
+    return (16, 0)
+
+
+def get_us_market_close_et(target_date=None) -> Optional[Tuple[int, int]]:
+    """미국 정규장 마감 시각(ET (hour, minute)) 반환. 휴장일/주말은 None."""
+    if target_date is None:
+        target_date = datetime.now(ET).date()
+    elif isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if target_date.weekday() >= 5:
+        return None
+
+    ds = target_date.isoformat()
+    if ds in US_EARLY_CLOSE_OVERRIDES:
+        return tuple(US_EARLY_CLOSE_OVERRIDES[ds])
+    if ds in _US_CLOSE_MEM_CACHE:
+        val = _US_CLOSE_MEM_CACHE[ds]
+        return tuple(val) if val is not None else None
+
+    file_cache = {}
+    try:
+        if os.path.exists(_US_CLOSE_CACHE_PATH):
+            with open(_US_CLOSE_CACHE_PATH, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    file_cache = loaded
+            if ds in file_cache and isinstance(file_cache[ds], dict) and "close" in file_cache[ds]:
+                val = file_cache[ds]["close"]
+                res = tuple(val) if val is not None else None
+                _US_CLOSE_MEM_CACHE[ds] = res
+                return res
+    except Exception:
+        file_cache = {}
+
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("NYSE")
+        sched = nyse.schedule(start_date=ds, end_date=ds)
+        if sched.empty:
+            result = None
+        else:
+            close_dt = sched.iloc[0]["market_close"].tz_convert(ET)
+            result = (int(close_dt.hour), int(close_dt.minute))
+        source = "pmc"
+    except Exception:
+        result = _get_us_market_close_et_rule(target_date)
+        source = "rule"
+
+    _US_CLOSE_MEM_CACHE[ds] = result
+    try:
+        file_cache[ds] = {"close": list(result) if result is not None else None, "source": source}
+        if len(file_cache) > 30:
+            for old_k in sorted(file_cache.keys())[:-30]:
+                file_cache.pop(old_k, None)
+        with open(_US_CLOSE_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(file_cache, f)
+    except Exception:
+        pass
+    return result
 
 _LsCommon = None
 _LsiUS = None
@@ -167,15 +249,20 @@ def fetch_current_price() -> Optional[float]:
 
 def is_us_market_open() -> bool:
     """
-    미국 정규장 개장 여부 (평일 09:30~16:00 ET + LS 휴장 판정).
-    LS 조회 자체가 실패하면 로컬 시계 기준으로만 판정합니다 (휴장일은 호출부의 당일 봉 날짜 가드가 차단).
+    미국 정규장 개장 여부 (평일 09:30~마감 ET [정규 16:00 / 조기폐장 13:00] + LS 휴장 판정).
+    LS 조회 자체가 실패하면 하이브리드 캘린더/로컬 시계 기준으로 판정합니다 (휴장일은 호출부의 당일 봉 날짜 가드가 차단).
     """
     try:
         return bool(_ensure_ls().IsMarketOpen(check_holiday=True))
     except Exception as e:
         now = datetime.now(ET)
-        minutes = now.hour * 60 + now.minute
-        fallback = now.weekday() < 5 and (9 * 60 + 30) <= minutes <= 16 * 60
+        close_et = get_us_market_close_et(now.date())
+        if close_et is None:
+            fallback = False
+        else:
+            minutes = now.hour * 60 + now.minute
+            close_minutes = close_et[0] * 60 + close_et[1]
+            fallback = (9 * 60 + 30) <= minutes <= close_minutes
         logger.warning(f"[LS] 미국장 개장 판정 실패 → 로컬 시계 기준 {fallback} 사용: {e}")
         return fallback
 

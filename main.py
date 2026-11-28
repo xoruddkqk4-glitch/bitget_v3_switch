@@ -238,15 +238,28 @@ def load_us_daily_or_abort() -> pd.DataFrame:
     return df
 
 
-def is_daily_evaluation_window() -> bool:
-    """일봉 평가 시간대 여부 (ls: 평일 15:54~15:59 ET / bitget 롤백: 09:10~09:30 KST)"""
+def get_eval_window_label() -> str:
+    """당일 일봉 평가 시간대 라벨 (조기폐장 시 12:54~12:59 ET 표시)."""
     if USE_LS:
         et_now = datetime.now(ET)
-        return (
-            et_now.weekday() < 5 and
-            et_now.hour == DAILY_EVAL_ET_HOUR and
-            DAILY_EVAL_ET_START_MIN <= et_now.minute <= DAILY_EVAL_ET_END_MIN
-        )
+        close_et = ls_client.get_us_market_close_et(et_now.date())
+        target_hour = (close_et[0] - 1) if close_et is not None else DAILY_EVAL_ET_HOUR
+        early_tag = " [조기폐장]" if target_hour < DAILY_EVAL_ET_HOUR else ""
+        return f"{target_hour}:{DAILY_EVAL_ET_START_MIN:02d}~{target_hour}:{DAILY_EVAL_ET_END_MIN:02d} ET{early_tag}"
+    return EVAL_WINDOW_LABEL
+
+
+def is_daily_evaluation_window() -> bool:
+    """일봉 평가 시간대 여부 (ls: 평일 정규장 15:54~15:59 ET / 조기폐장 12:54~12:59 ET, bitget 롤백: 09:10~09:30 KST)"""
+    if USE_LS:
+        et_now = datetime.now(ET)
+        if et_now.weekday() >= 5 or not (DAILY_EVAL_ET_START_MIN <= et_now.minute <= DAILY_EVAL_ET_END_MIN):
+            return False
+        close_et = ls_client.get_us_market_close_et(et_now.date())
+        if close_et is None:
+            return False
+        target_hour = close_et[0] - 1
+        return et_now.hour == target_hour
     kst_now = datetime.now(KST)
     return (
         kst_now.hour == DAILY_EVAL_HOUR_KST and
@@ -754,7 +767,7 @@ def run_cron_tick() -> bool:
                 return True
             expected_eval_candle = (kst_now - timedelta(days=1)).strftime("%Y-%m-%d 09:00:00")
         if not cycle_manager.is_daily_evaluated(expected_eval_candle):
-            logger.info(f"[CronTick] 일봉 평가 시간대({EVAL_WINDOW_LABEL}) 충족 -> 일봉 마감 파이프라인 실행")
+            logger.info(f"[CronTick] 일봉 평가 시간대({get_eval_window_label()}) 충족 -> 일봉 마감 파이프라인 실행")
             return run_pipeline()
         logger.info(f"[CronTick] 금일 일봉({expected_eval_candle}) 평가 완료 상태 -> 중복 파이프라인 진입 생략")
 
